@@ -17,7 +17,7 @@ REQUIRED_COLS = [
     "Height (ft)", "Gross Storage Capacity (Aft)", "Live storage (Aft)",
     "C.C.A. (Acres)", "Capacity of Channel (Cfs)", "Length of Canal (ft)",
     "DSL (ft)", "NPL (ft)", "HFL (ft)",
-    "River / Nullah", "Year of Cor", "Catchment Area (Sq. Km)",
+    "River / Nullah", "Catchment Area (Sq. Km)",
     "Latitude", "Longitude"
 ]
 
@@ -255,7 +255,6 @@ with det_col2:
             "NPL (ft)": details.get("NPL (ft)"),
             "HFL (ft)": details.get("HFL (ft)"),
             "River / Nullah": details.get("River / Nullah"),
-            "Year of Completion": details.get("Year of Cor"),
             "Catchment Area (Sq. Km)": details.get("Catchment Area (Sq. Km)"),
             "Latitude": details.get("Latitude"),
             "Longitude": details.get("Longitude"),
