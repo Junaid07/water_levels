@@ -3,22 +3,85 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import pydeck as pdk
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
+import re
 
 # ------------------ CONFIG ------------------
 st.set_page_config(page_title="Dam Water Levels Dashboard", layout="wide")
 st.title("💧 Dam Water Levels & Status Dashboard")
 
-CSV_PATH = Path("dams_data.csv")  # your master CSV with static fields + Date/Water_Level_ft rows
+CSV_PATH = Path("dams_data.csv")  # your CSV
+
+# =============== COLUMN NORMALIZATION ===============
+# We will standardize your headers (remove quotes/newlines) and then map to clean keys
+def _clean_header(s: str) -> str:
+    if s is None:
+        return s
+    s = str(s)
+    s = s.replace('"', '')                         # drop quotes
+    s = re.sub(r"\s+", " ", s)                    # collapse whitespace/newlines
+    s = s.strip()
+    return s
+
+# Map your *original* headers to the internal canonical names used in the app
+HEADER_ALIASES = {
+    "Date": "Date",
+    "Location": "Location",
+    "Water_Level_ft": "Water_Level_ft",
+    "Height (ft)": "Height (ft)",
+    "Completion Cost (million)": "Completion Cost (million)",
+    "Gross Storage Capacity (Aft)": "Gross Storage Capacity (Aft)",
+    "Live storage (Aft)": "Live storage (Aft)",
+    "C.C.A. (Acres)": "C.C.A. (Acres)",
+    "Capacity of Channel (Cfs)": "Capacity of Channel (Cfs)",
+    "Length of Canal (ft)": "Length of Canal (ft)",
+    "DSL (ft)": "DSL (ft)",
+    "NPL (ft)": "NPL (ft)",
+    "HFL (ft)": "HFL (ft)",
+    "River / Nullah": "River / Nullah",
+    "Year of Completion": "Year of Completion",
+    "Catchment Area (Sq. Km)": "Catchment Area (Sq. Km)",
+    "Latitude": "Latitude",
+    "Longitude": "Longitude",
+}
+
+# Also accept variants with line breaks exactly as in your screenshot:
+HEADER_ALIASES.update({
+    "Height (ft)": "Height (ft)",
+    "Completion Cost (million)": "Completion Cost (million)",
+    "Gross Storage Capacity (Aft)": "Gross Storage Capacity (Aft)",
+    "Live storage (Aft)": "Live storage (Aft)",
+    "C.C.A. (Acres)": "C.C.A. (Acres)",
+    "Capacity of Channel (Cfs)": "Capacity of Channel (Cfs)",
+    "Length of Canal (ft)": "Length of Canal (ft)",
+    "DSL (ft)": "DSL (ft)",
+    "NPL (ft)": "NPL (ft)",
+    "HFL (ft)": "HFL (ft)",
+})
+
+# In case the raw file literally contains newlines in the header cells, we normalize them:
+RAW_TO_ALIAS_NORMALIZER = {
+    'Height \n(ft)': "Height (ft)",
+    'Completion Cost \n(million)': "Completion Cost (million)",
+    'Gross Storage Capacity \n(Aft)': "Gross Storage Capacity (Aft)",
+    'Live storage \n(Aft)': "Live storage (Aft)",
+    'C.C.A. \n(Acres)': "C.C.A. (Acres)",
+    'Capacity of Channel \n(Cfs)': "Capacity of Channel (Cfs)",
+    'Length of Canal \n(ft)': "Length of Canal (ft)",
+    'DSL \n(ft)': "DSL (ft)",
+    'NPL \n(ft)': "NPL (ft)",
+    'HFL \n(ft)': "HFL (ft)",
+    'Catchment Area \n(Sq. Km)': "Catchment Area (Sq. Km)",
+}
 
 REQUIRED_COLS = [
     "Date", "Location", "Water_Level_ft",
     "Height (ft)", "Gross Storage Capacity (Aft)", "Live storage (Aft)",
     "C.C.A. (Acres)", "Capacity of Channel (Cfs)", "Length of Canal (ft)",
     "DSL (ft)", "NPL (ft)", "HFL (ft)",
-    "River / Nullah", "Catchment Area (Sq. Km)",
-    "Latitude", "Longitude"
+    "River / Nullah", "Year of Completion",
+    "Catchment Area (Sq. Km)", "Latitude", "Longitude"
 ]
 
 STATUS_COLORS = {
@@ -28,60 +91,64 @@ STATUS_COLORS = {
     "Spill Watch": [255, 152, 0],       # orange
     "Spill Anytime": [229, 57, 53],     # red
     "Spilling": [183, 28, 28],          # dark red
+    "Unknown": [120, 120, 120],
 }
 
 # ------------------ HELPERS ------------------
 def ensure_csv():
     if not CSV_PATH.exists():
-        # make an empty file with headers if missing
         pd.DataFrame(columns=REQUIRED_COLS).to_csv(CSV_PATH, index=False)
 
 @st.cache_data(ttl=30)
 def load_data() -> pd.DataFrame:
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
-    # Normalize column names (trim whitespace/newlines)
-    df.columns = df.columns.str.replace(r"\s+", " ", regex=True).str.strip()
-    # Ensure required columns exist (in case of spelling)
+
+    # 1) Clean raw headers (remove quotes/newlines)
+    df.columns = [_clean_header(c) for c in df.columns]
+
+    # 2) Fix explicit newline-style titles from your screenshot
+    for raw, fixed in RAW_TO_ALIAS_NORMALIZER.items():
+        if raw in df.columns and fixed not in df.columns:
+            df.rename(columns={raw: fixed}, inplace=True)
+
+    # 3) Apply alias map (in case other variants appear)
+    rename_map = {}
+    for c in list(df.columns):
+        if c in HEADER_ALIASES:
+            rename_map[c] = HEADER_ALIASES[c]
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+
+    # 4) Check required (after mapping)
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
-        st.error(f"CSV is missing required columns: {missing}")
+        st.error(f"CSV is missing required columns after normalization: {missing}")
         st.stop()
-    # Convert types
+
+    # 5) Types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
     df["Water_Level_ft"] = pd.to_numeric(df["Water_Level_ft"], errors="coerce")
-    for c in ["DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)"]:
+    for c in ["DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
+              "Gross Storage Capacity (Aft)", "Live storage (Aft)",
+              "C.C.A. (Acres)", "Capacity of Channel (Cfs)",
+              "Length of Canal (ft)", "Catchment Area (Sq. Km)",
+              "Latitude", "Longitude"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    if "Latitude" in df.columns:
-        df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
-    if "Longitude" in df.columns:
-        df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
     return df
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
-    """
-    Rules (precedence handled top → bottom):
-    - if WL > NPL → "Spilling"
-    - if WL == NPL → "Spill Anytime"
-    - if WL within 2 ft of NPL → "Spill Watch"
-    - if WL within 5 ft of DSL → "Low Storage"
-    - else compute diff = NPL - WL:
-        - diff < 5 → "Storage High"
-        - diff >= 5 → "Storage Medium"
-    """
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
         return "Unknown"
-
     if wl > npl:
         return "Spilling"
-    if abs(wl - npl) < 1e-9:  # equal within floating precision
+    if abs(wl - npl) < 1e-9:
         return "Spill Anytime"
     if abs(wl - npl) <= 2:
         return "Spill Watch"
     if abs(wl - dsl) <= 5:
         return "Low Storage"
-
     diff = npl - wl
     if diff < 5:
         return "Storage High"
@@ -96,33 +163,24 @@ def add_status(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
-    """
-    Upsert a daily reading for (Date, Location).
-    Keeps the static fields from the first row found for that Location.
-    If no static row exists for location, raises a user error.
-    """
     if loc not in df["Location"].unique():
-        st.error(f"Location '{loc}' is not present in the CSV static data. "
-                 f"Add at least one row for this location with its static fields first.")
+        st.error(
+            f"Location '{loc}' is not present in the CSV static data.\n"
+            f"Add at least one row for this location with its static fields first."
+        )
         st.stop()
 
-    # any one row for static fields
     static_row = df[df["Location"] == loc].iloc[0].to_dict()
-
-    # build the new row using static fields + new date/wl
     new_row = {k: static_row.get(k, None) for k in df.columns}
     new_row["Date"] = d
     new_row["Water_Level_ft"] = wl
 
-    # check if an entry already exists for (d, loc)
     m = (df["Location"] == loc) & (df["Date"] == d)
     if m.any():
-        # update WL only
         df.loc[m, "Water_Level_ft"] = wl
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
-    # Sort for cleanliness
     try:
         df = df.sort_values(by=["Date", "Location"], kind="stable").reset_index(drop=True)
     except Exception:
@@ -130,31 +188,28 @@ def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFra
     return df
 
 def save_df(df: pd.DataFrame):
-    # Write as ISO dates
     df_out = df.copy()
-    df_out["Date"] = pd.to_datetime(df_out["Date"]).dt.strftime("%Y-%m-%d")
+    df_out["Date"] = pd.to_datetime(df_out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out.to_csv(CSV_PATH, index=False)
     st.cache_data.clear()
 
 def colored_map_layer(df_map: pd.DataFrame) -> pdk.Deck:
-    # convert status to colors
     df_map = df_map.copy()
     df_map["color"] = df_map["Status"].map(lambda s: STATUS_COLORS.get(s, [120, 120, 120]))
-    view_state = pdk.ViewState(
-        latitude=float(df_map["Latitude"].mean()) if len(df_map) else 30.0,
-        longitude=float(df_map["Longitude"].mean()) if len(df_map) else 70.0,
-        zoom=6
-    )
+    center_lat = float(df_map["Latitude"].mean()) if len(df_map) else 30.0
+    center_lon = float(df_map["Longitude"].mean()) if len(df_map) else 70.0
+    view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=6)
     layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
         get_position="[Longitude, Latitude]",
         get_fill_color="color",
-        get_radius=8000,  # meters
+        get_radius=8000,
         pickable=True
     )
     tooltip = {
-        "html": "<b>{Location}</b><br/>Status: {Status}<br/>WL: {Water_Level_ft} ft<br/>NPL: {NPL (ft)} ft<br/>DSL: {DSL (ft)} ft",
+        "html": "<b>{Location}</b><br/>Status: {Status}<br/>WL: {Water_Level_ft} ft"
+                "<br/>NPL: {NPL (ft)} ft<br/>DSL: {DSL (ft)} ft",
         "style": {"backgroundColor": "white", "color": "black"}
     }
     return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
@@ -190,7 +245,6 @@ with fl3:
 
 view = df.copy()
 if only_latest and not view.empty:
-    # keep latest entry per dam
     idx = view.groupby("Location")["Date"].transform("max") == view["Date"]
     view = view[idx]
 else:
@@ -242,7 +296,8 @@ det_col1, det_col2 = st.columns([1, 2])
 with det_col1:
     dam_for_details = st.selectbox("Select a dam", sorted(df["Location"].unique()))
 with det_col2:
-    details = df[df["Location"] == dam_for_details].sort_values("Date").iloc[-1] if (df["Location"] == dam_for_details).any() else None
+    details = df[df["Location"] == dam_for_details].sort_values("Date").iloc[-1] \
+              if (df["Location"] == dam_for_details).any() else None
     if details is not None:
         st.write({
             "Height (ft)": details.get("Height (ft)"),
@@ -255,6 +310,7 @@ with det_col2:
             "NPL (ft)": details.get("NPL (ft)"),
             "HFL (ft)": details.get("HFL (ft)"),
             "River / Nullah": details.get("River / Nullah"),
+            "Year of Completion": details.get("Year of Completion"),
             "Catchment Area (Sq. Km)": details.get("Catchment Area (Sq. Km)"),
             "Latitude": details.get("Latitude"),
             "Longitude": details.get("Longitude"),
@@ -263,5 +319,5 @@ with det_col2:
         })
     else:
         st.info("No details available.")
-        
+
 st.caption("Developer: **Junaid Ahmad, PhD**")
