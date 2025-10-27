@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
+import math
 
 # ───────────────────────── CONFIG ─────────────────────────
 st.set_page_config(page_title="Dam Water Levels Dashboard", layout="wide")
@@ -14,7 +15,7 @@ st.title("💧 Dam Water Levels & Status Dashboard")
 
 CSV_PATH = Path("dams_data.csv")
 
-# Canonical header names
+# Map messy spreadsheet headers → canonical names used in the app
 RAW_TO_CANON = {
     'Height \n(ft)': "Height (ft)",
     'Completion Cost \n(million)': "Completion Cost (million)",
@@ -93,7 +94,7 @@ def load_data() -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # 5) Fill one-time static fields per dam (forward/back-fill)
+    # 5) Fill static columns per dam (forward/back-fill)
     static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
     df[static_cols] = (
         df.sort_values(["Location", "Date"])
@@ -156,41 +157,52 @@ def save_df(df: pd.DataFrame):
     st.cache_data.clear()
 
 # ───────────────────────── MAP ─────────────────────────
+def _safe_float(x):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
 def make_map(deck_df: pd.DataFrame):
-    """Build a robust PyDeck map. Avoid non-serializable fields and bad coords."""
+    """Build a robust PyDeck map using plain Python dict records."""
     df_map = deck_df.copy()
 
-    # Keep only valid numeric coordinates
-    df_map = df_map[pd.to_numeric(df_map["Latitude"], errors="coerce").notnull()]
-    df_map = df_map[pd.to_numeric(df_map["Longitude"], errors="coerce").notnull()]
+    # Only rows with valid numeric coordinates
+    df_map["lat"] = df_map["Latitude"].apply(_safe_float)
+    df_map["lon"] = df_map["Longitude"].apply(_safe_float)
+    df_map = df_map[df_map["lat"].notnull() & df_map["lon"].notnull()]
     if df_map.empty:
         return None
 
-    # Ensure numeric types
-    df_map["Latitude"] = df_map["Latitude"].astype(float)
-    df_map["Longitude"] = df_map["Longitude"].astype(float)
+    # Prepare plain dict records (native types only)
+    def _row_to_record(r):
+        return {
+            "Location": str(r["Location"]) if r["Location"] is not None else "",
+            "Status": str(r["Status"]) if r["Status"] is not None else "Unknown",
+            "WL_ft": _safe_float(r["Water_Level_ft"]),
+            "NPL_ft": _safe_float(r["NPL (ft)"]),
+            "DSL_ft": _safe_float(r["DSL (ft)"]),
+            "Date_str": str(r["Date"]),
+            "Latitude": float(r["lat"]),
+            "Longitude": float(r["lon"]),
+            "color": STATUS_COLORS.get(str(r["Status"]), [120, 120, 120]),
+        }
 
-    # Avoid non-JSON-serializable objects (e.g., python date)
-    if "Date" in df_map.columns:
-        df_map["Date_str"] = df_map["Date"].astype(str)
-
-    # Rename fields to safe names for tooltip
-    df_map = df_map.rename(columns={
-        "Water_Level_ft": "WL_ft",
-        "NPL (ft)": "NPL_ft",
-        "DSL (ft)": "DSL_ft"
-    })
-    df_map["color"] = df_map["Status"].map(lambda s: STATUS_COLORS.get(s, [120, 120, 120]))
+    records = [_row_to_record(r) for _, r in df_map.iterrows()]
+    if not records:
+        return None
 
     view_state = pdk.ViewState(
-        latitude=df_map["Latitude"].mean(),
-        longitude=df_map["Longitude"].mean(),
+        latitude=sum([rec["Latitude"] for rec in records]) / len(records),
+        longitude=sum([rec["Longitude"] for rec in records]) / len(records),
         zoom=6,
     )
 
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=df_map,
+        data=records,                            # ← list of dicts (fully serializable)
         get_position="[Longitude, Latitude]",
         get_fill_color="color",
         get_radius=8000,
