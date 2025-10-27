@@ -14,7 +14,7 @@ st.title("💧 Dam Water Levels & Status Dashboard")
 
 CSV_PATH = Path("dams_data.csv")
 
-# Canonical names the app uses internally
+# Canonical header names
 CANON = {
     "Date": "Date",
     "Location": "Location",
@@ -36,7 +36,6 @@ CANON = {
     "Longitude": "Longitude",
 }
 
-# Variants with line breaks from spreadsheets → map to canonical
 RAW_TO_CANON = {
     'Height \n(ft)': "Height (ft)",
     'Completion Cost \n(million)': "Completion Cost (million)",
@@ -85,10 +84,10 @@ def load_data() -> pd.DataFrame:
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
 
-    # 1) Clean headers
+    # Clean headers
     df.columns = [_clean_header(c) for c in df.columns]
 
-    # 2) Map raw line-broken variants to canonical names
+    # Map line-broken headers to canonical
     for raw, canon in RAW_TO_CANON.items():
         raw_clean = _clean_header(raw)
         if raw in df.columns and canon not in df.columns:
@@ -96,15 +95,13 @@ def load_data() -> pd.DataFrame:
         elif raw_clean in df.columns and canon not in df.columns:
             df.rename(columns={raw_clean: canon}, inplace=True)
 
-    # 3) If columns already match canonical names, keep as-is
-
-    # 4) Validate required columns
+    # Validate columns
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
         st.error(f"CSV is missing required columns after normalization: {missing}")
         st.stop()
 
-    # 5) Types
+    # Parse types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
     num_cols = [
         "Water_Level_ft", "DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
@@ -117,7 +114,7 @@ def load_data() -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # 6) Fill one-time static fields per Location (forward/back fill within each dam)
+    # Fill static columns per dam (forward/back fill)
     static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
     df[static_cols] = (
         df.sort_values(["Location", "Date"])
@@ -129,9 +126,7 @@ def load_data() -> pd.DataFrame:
     return df
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
-    # Precedence from your spec
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
-        # Still allow "Low Storage" when DSL is present but NPL missing
         if not pd.isna(wl) and not pd.isna(dsl) and abs(wl - dsl) <= 5:
             return "Low Storage"
         return "Unknown"
@@ -159,30 +154,22 @@ def with_status(df: pd.DataFrame) -> pd.DataFrame:
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
     if loc not in df["Location"].unique():
         st.error(
-            f"Location '{loc}' is not present in the CSV static data.\n"
-            f"Add at least one row for this location with its static fields first."
+            f"Location '{loc}' not found in static data. Add one base row first."
         )
         st.stop()
 
-    # Use an existing row for static fields
     static_row = df[df["Location"] == loc].iloc[0].to_dict()
     new_row = {k: static_row.get(k, None) for k in df.columns}
     new_row["Date"] = d
     new_row["Water_Level_ft"] = wl
 
-    # Upsert by (Date, Location)
     m = (df["Location"] == loc) & (df["Date"] == d)
     if m.any():
         df.loc[m, "Water_Level_ft"] = wl
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
-    # Keep rows ordered
-    try:
-        df = df.sort_values(["Date", "Location"], kind="stable").reset_index(drop=True)
-    except Exception:
-        pass
-    return df
+    return df.sort_values(["Date", "Location"]).reset_index(drop=True)
 
 def save_df(df: pd.DataFrame):
     out = df.copy()
@@ -191,31 +178,42 @@ def save_df(df: pd.DataFrame):
     st.cache_data.clear()
 
 def make_map(deck_df: pd.DataFrame):
-    df_map = deck_df.dropna(subset=["Latitude", "Longitude"]).copy()
-    df_map["color"] = df_map["Status"].map(lambda s: STATUS_COLORS.get(s, [120, 120, 120]))
+    """Safely build PyDeck map."""
+    df_map = deck_df.copy()
+    df_map = df_map[pd.to_numeric(df_map["Latitude"], errors="coerce").notnull()]
+    df_map = df_map[pd.to_numeric(df_map["Longitude"], errors="coerce").notnull()]
     if df_map.empty:
         return None
-    view_state = pdk.ViewState(
-        latitude=float(df_map["Latitude"].mean()),
-        longitude=float(df_map["Longitude"].mean()),
-        zoom=6
-    )
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df_map,
-        get_position="[Longitude, Latitude]",
-        get_fill_color="color",
-        get_radius=8000,
-        pickable=True,
-    )
-    tooltip = {
-        "html": "<b>{Location}</b><br/>Status: {Status}<br/>WL: {Water_Level_ft} ft"
-                "<br/>NPL: {NPL (ft)} ft<br/>DSL: {DSL (ft)} ft",
-        "style": {"backgroundColor": "white", "color": "black"},
-    }
-    return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
 
-# ────────────────────── SIDEBAR (ENTRY) ──────────────────────
+    df_map["Latitude"] = df_map["Latitude"].astype(float)
+    df_map["Longitude"] = df_map["Longitude"].astype(float)
+    df_map["color"] = df_map["Status"].map(lambda s: STATUS_COLORS.get(s, [120, 120, 120]))
+
+    try:
+        view_state = pdk.ViewState(
+            latitude=df_map["Latitude"].mean(),
+            longitude=df_map["Longitude"].mean(),
+            zoom=6,
+        )
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=df_map,
+            get_position="[Longitude, Latitude]",
+            get_fill_color="color",
+            get_radius=8000,
+            pickable=True,
+        )
+        tooltip = {
+            "html": "<b>{Location}</b><br/>Status: {Status}<br/>WL: {Water_Level_ft} ft"
+                    "<br/>NPL: {NPL (ft)} ft<br/>DSL: {DSL (ft)} ft",
+            "style": {"backgroundColor": "white", "color": "black"},
+        }
+        return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
+    except Exception as e:
+        st.warning(f"Map rendering skipped: {e}")
+        return None
+
+# ────────────────────── SIDEBAR ──────────────────────
 with st.sidebar:
     st.header("➕ Add / Update Daily Reading")
     df_all = load_data()
@@ -261,7 +259,7 @@ else:
     for k in (k1, k2, k3, k4):
         k.metric("-", "-")
 
-# Table
+# Data Table
 st.markdown("### 📋 Data")
 cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status"]
 st.dataframe(view[cols_show].sort_values(["Location"]), use_container_width=True)
@@ -281,9 +279,12 @@ if not view.empty:
 st.markdown("### 🗺️ Dams on Map (colored by Status)")
 deck = make_map(view)
 if deck is not None:
-    st.pydeck_chart(deck)
+    try:
+        st.pydeck_chart(deck)
+    except Exception as e:
+        st.error(f"Map rendering failed: {e}")
 else:
-    st.info("No coordinates available to display the map for current filter.")
+    st.info("No valid coordinates available to display the map for current filter.")
 
 # Details
 st.markdown("### 🏗️ Dam Details")
