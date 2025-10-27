@@ -15,27 +15,6 @@ st.title("💧 Dam Water Levels & Status Dashboard")
 CSV_PATH = Path("dams_data.csv")
 
 # Canonical header names
-CANON = {
-    "Date": "Date",
-    "Location": "Location",
-    "Water_Level_ft": "Water_Level_ft",
-    "Height (ft)": "Height (ft)",
-    "Completion Cost (million)": "Completion Cost (million)",
-    "Gross Storage Capacity (Aft)": "Gross Storage Capacity (Aft)",
-    "Live storage (Aft)": "Live storage (Aft)",
-    "C.C.A. (Acres)": "C.C.A. (Acres)",
-    "Capacity of Channel (Cfs)": "Capacity of Channel (Cfs)",
-    "Length of Canal (ft)": "Length of Canal (ft)",
-    "DSL (ft)": "DSL (ft)",
-    "NPL (ft)": "NPL (ft)",
-    "HFL (ft)": "HFL (ft)",
-    "River / Nullah": "River / Nullah",
-    "Year of Completion": "Year of Completion",
-    "Catchment Area (Sq. Km)": "Catchment Area (Sq. Km)",
-    "Latitude": "Latitude",
-    "Longitude": "Longitude",
-}
-
 RAW_TO_CANON = {
     'Height \n(ft)': "Height (ft)",
     'Completion Cost \n(million)': "Completion Cost (million)",
@@ -84,10 +63,10 @@ def load_data() -> pd.DataFrame:
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
 
-    # Clean headers
+    # 1) Clean headers
     df.columns = [_clean_header(c) for c in df.columns]
 
-    # Map line-broken headers to canonical
+    # 2) Map line-broken headers to canonical
     for raw, canon in RAW_TO_CANON.items():
         raw_clean = _clean_header(raw)
         if raw in df.columns and canon not in df.columns:
@@ -95,13 +74,13 @@ def load_data() -> pd.DataFrame:
         elif raw_clean in df.columns and canon not in df.columns:
             df.rename(columns={raw_clean: canon}, inplace=True)
 
-    # Validate columns
+    # 3) Validate columns
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
         st.error(f"CSV is missing required columns after normalization: {missing}")
         st.stop()
 
-    # Parse types
+    # 4) Parse types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
     num_cols = [
         "Water_Level_ft", "DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
@@ -114,7 +93,7 @@ def load_data() -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Fill static columns per dam (forward/back fill)
+    # 5) Fill one-time static fields per dam (forward/back-fill)
     static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
     df[static_cols] = (
         df.sort_values(["Location", "Date"])
@@ -126,6 +105,7 @@ def load_data() -> pd.DataFrame:
     return df
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
+    # Precedence from your spec
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
         if not pd.isna(wl) and not pd.isna(dsl) and abs(wl - dsl) <= 5:
             return "Low Storage"
@@ -153,9 +133,7 @@ def with_status(df: pd.DataFrame) -> pd.DataFrame:
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
     if loc not in df["Location"].unique():
-        st.error(
-            f"Location '{loc}' not found in static data. Add one base row first."
-        )
+        st.error("Location not found in static data. Add one base row first.")
         st.stop()
 
     static_row = df[df["Location"] == loc].iloc[0].to_dict()
@@ -177,41 +155,56 @@ def save_df(df: pd.DataFrame):
     out.to_csv(CSV_PATH, index=False)
     st.cache_data.clear()
 
+# ───────────────────────── MAP ─────────────────────────
 def make_map(deck_df: pd.DataFrame):
-    """Safely build PyDeck map."""
+    """Build a robust PyDeck map. Avoid non-serializable fields and bad coords."""
     df_map = deck_df.copy()
+
+    # Keep only valid numeric coordinates
     df_map = df_map[pd.to_numeric(df_map["Latitude"], errors="coerce").notnull()]
     df_map = df_map[pd.to_numeric(df_map["Longitude"], errors="coerce").notnull()]
     if df_map.empty:
         return None
 
+    # Ensure numeric types
     df_map["Latitude"] = df_map["Latitude"].astype(float)
     df_map["Longitude"] = df_map["Longitude"].astype(float)
+
+    # Avoid non-JSON-serializable objects (e.g., python date)
+    if "Date" in df_map.columns:
+        df_map["Date_str"] = df_map["Date"].astype(str)
+
+    # Rename fields to safe names for tooltip
+    df_map = df_map.rename(columns={
+        "Water_Level_ft": "WL_ft",
+        "NPL (ft)": "NPL_ft",
+        "DSL (ft)": "DSL_ft"
+    })
     df_map["color"] = df_map["Status"].map(lambda s: STATUS_COLORS.get(s, [120, 120, 120]))
 
-    try:
-        view_state = pdk.ViewState(
-            latitude=df_map["Latitude"].mean(),
-            longitude=df_map["Longitude"].mean(),
-            zoom=6,
-        )
-        layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=df_map,
-            get_position="[Longitude, Latitude]",
-            get_fill_color="color",
-            get_radius=8000,
-            pickable=True,
-        )
-        tooltip = {
-            "html": "<b>{Location}</b><br/>Status: {Status}<br/>WL: {Water_Level_ft} ft"
-                    "<br/>NPL: {NPL (ft)} ft<br/>DSL: {DSL (ft)} ft",
-            "style": {"backgroundColor": "white", "color": "black"},
-        }
-        return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
-    except Exception as e:
-        st.warning(f"Map rendering skipped: {e}")
-        return None
+    view_state = pdk.ViewState(
+        latitude=df_map["Latitude"].mean(),
+        longitude=df_map["Longitude"].mean(),
+        zoom=6,
+    )
+
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df_map,
+        get_position="[Longitude, Latitude]",
+        get_fill_color="color",
+        get_radius=8000,
+        pickable=True,
+    )
+
+    tooltip = {
+        "html": "<b>{Location}</b><br/>Status: {Status}"
+                "<br/>WL: {WL_ft} ft<br/>NPL: {NPL_ft} ft<br/>DSL: {DSL_ft} ft"
+                "<br/>Date: {Date_str}",
+        "style": {"backgroundColor": "white", "color": "black"},
+    }
+
+    return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
 
 # ────────────────────── SIDEBAR ──────────────────────
 with st.sidebar:
