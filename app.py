@@ -14,56 +14,48 @@ st.title("💧 Dam Water Levels & Status Dashboard")
 
 CSV_PATH = Path("dams_data.csv")
 
-# Your (updated) header names from the file
-RAW_HEADERS = [
-    "Date",
-    "Location",
-    "Water_Level_ft",
-    'Height \n(ft)',
-    'Completion Cost \n(million)',
-    'Gross Storage Capacity \n(Aft)',
-    'Live storage \n(Aft)',
-    'C.C.A. \n(Acres)',
-    'Capacity of Channel \n(Cfs)',
-    'Length of Canal \n(ft)',
-    'DSL \n(ft)',
-    'NPL \n(ft)',
-    'HFL \n(ft)',
-    'River / Nullah',
-    'Year of Completion',
-    'Catchment Area \n(Sq. Km)',
-    'Latitude',
-    'Longitude',
-]
-
-# Canonical names used inside the app
+# Canonical names the app uses internally
 CANON = {
     "Date": "Date",
     "Location": "Location",
     "Water_Level_ft": "Water_Level_ft",
-    "Height \n(ft)": "Height (ft)",
-    "Completion Cost \n(million)": "Completion Cost (million)",
-    "Gross Storage Capacity \n(Aft)": "Gross Storage Capacity (Aft)",
-    "Live storage \n(Aft)": "Live storage (Aft)",
-    "C.C.A. \n(Acres)": "C.C.A. (Acres)",
-    "Capacity of Channel \n(Cfs)": "Capacity of Channel (Cfs)",
-    "Length of Canal \n(ft)": "Length of Canal (ft)",
-    "DSL \n(ft)": "DSL (ft)",
-    "NPL \n(ft)": "NPL (ft)",
-    "HFL \n(ft)": "HFL (ft)",
+    "Height (ft)": "Height (ft)",
+    "Completion Cost (million)": "Completion Cost (million)",
+    "Gross Storage Capacity (Aft)": "Gross Storage Capacity (Aft)",
+    "Live storage (Aft)": "Live storage (Aft)",
+    "C.C.A. (Acres)": "C.C.A. (Acres)",
+    "Capacity of Channel (Cfs)": "Capacity of Channel (Cfs)",
+    "Length of Canal (ft)": "Length of Canal (ft)",
+    "DSL (ft)": "DSL (ft)",
+    "NPL (ft)": "NPL (ft)",
+    "HFL (ft)": "HFL (ft)",
     "River / Nullah": "River / Nullah",
     "Year of Completion": "Year of Completion",
-    "Catchment Area \n(Sq. Km)": "Catchment Area (Sq. Km)",
+    "Catchment Area (Sq. Km)": "Catchment Area (Sq. Km)",
     "Latitude": "Latitude",
     "Longitude": "Longitude",
+}
+
+# Variants with line breaks from spreadsheets → map to canonical
+RAW_TO_CANON = {
+    'Height \n(ft)': "Height (ft)",
+    'Completion Cost \n(million)': "Completion Cost (million)",
+    'Gross Storage Capacity \n(Aft)': "Gross Storage Capacity (Aft)",
+    'Live storage \n(Aft)': "Live storage (Aft)",
+    'C.C.A. \n(Acres)': "C.C.A. (Acres)",
+    'Capacity of Channel \n(Cfs)': "Capacity of Channel (Cfs)",
+    'Length of Canal \n(ft)': "Length of Canal (ft)",
+    'DSL \n(ft)': "DSL (ft)",
+    'NPL \n(ft)': "NPL (ft)",
+    'HFL \n(ft)': "HFL (ft)",
+    'Catchment Area \n(Sq. Km)': "Catchment Area (Sq. Km)",
 }
 
 REQUIRED_COLS = [
     "Date", "Location", "Water_Level_ft",
     "Height (ft)", "Gross Storage Capacity (Aft)", "Live storage (Aft)",
     "C.C.A. (Acres)", "Capacity of Channel (Cfs)", "Length of Canal (ft)",
-    "DSL (ft)", "NPL (ft)", "HFL (ft)",
-    "River / Nullah", "Year of Completion",
+    "DSL (ft)", "NPL (ft)", "HFL (ft)", "River / Nullah", "Year of Completion",
     "Catchment Area (Sq. Km)", "Latitude", "Longitude",
 ]
 
@@ -78,47 +70,41 @@ STATUS_COLORS = {
 }
 
 # ──────────────────────── HELPERS ────────────────────────
-def ensure_csv():
-    if not CSV_PATH.exists():
-        # create an empty file with canonical headers
-        pd.DataFrame(columns=REQUIRED_COLS).to_csv(CSV_PATH, index=False)
-
 def _clean_header(s: str) -> str:
-    """Remove quotes, collapse whitespace/newlines."""
+    """Remove quotes and collapse whitespace/newlines."""
     s = str(s).replace('"', '')
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+def ensure_csv():
+    if not CSV_PATH.exists():
+        pd.DataFrame(columns=REQUIRED_COLS).to_csv(CSV_PATH, index=False)
 
 @st.cache_data(ttl=30)
 def load_data() -> pd.DataFrame:
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
 
-    # 1) Clean whatever headers exist
+    # 1) Clean headers
     df.columns = [_clean_header(c) for c in df.columns]
 
-    # 2) If the file still has the line-broken versions, map to canonical
-    #    Try mapping from both RAW_HEADERS and already-cleaned variants.
-    rename_map = {}
-    for h in df.columns:
-        # Try exact RAW mapping (with newlines) first
-        for raw, canon in CANON.items():
-            if _clean_header(raw) == h or raw == h:
-                rename_map[h] = canon
-                break
-        # If none matched but header is already a canonical name, keep as is
-        if h in CANON.values():
-            rename_map[h] = h
-    if rename_map:
-        df.rename(columns=rename_map, inplace=True)
+    # 2) Map raw line-broken variants to canonical names
+    for raw, canon in RAW_TO_CANON.items():
+        raw_clean = _clean_header(raw)
+        if raw in df.columns and canon not in df.columns:
+            df.rename(columns={raw: canon}, inplace=True)
+        elif raw_clean in df.columns and canon not in df.columns:
+            df.rename(columns={raw_clean: canon}, inplace=True)
 
-    # 3) Validate
+    # 3) If columns already match canonical names, keep as-is
+
+    # 4) Validate required columns
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
         st.error(f"CSV is missing required columns after normalization: {missing}")
         st.stop()
 
-    # 4) Types
+    # 5) Types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
     num_cols = [
         "Water_Level_ft", "DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
@@ -130,10 +116,24 @@ def load_data() -> pd.DataFrame:
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # 6) Fill one-time static fields per Location (forward/back fill within each dam)
+    static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
+    df[static_cols] = (
+        df.sort_values(["Location", "Date"])
+          .groupby("Location")[static_cols]
+          .apply(lambda g: g.ffill().bfill())
+          .reset_index(level=0, drop=True)
+    )
+
     return df
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
+    # Precedence from your spec
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
+        # Still allow "Low Storage" when DSL is present but NPL missing
+        if not pd.isna(wl) and not pd.isna(dsl) and abs(wl - dsl) <= 5:
+            return "Low Storage"
         return "Unknown"
     if wl > npl:
         return "Spilling"
@@ -164,27 +164,30 @@ def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFra
         )
         st.stop()
 
+    # Use an existing row for static fields
     static_row = df[df["Location"] == loc].iloc[0].to_dict()
     new_row = {k: static_row.get(k, None) for k in df.columns}
     new_row["Date"] = d
     new_row["Water_Level_ft"] = wl
 
+    # Upsert by (Date, Location)
     m = (df["Location"] == loc) & (df["Date"] == d)
     if m.any():
         df.loc[m, "Water_Level_ft"] = wl
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
+    # Keep rows ordered
     try:
-        df = df.sort_values(by=["Date", "Location"], kind="stable").reset_index(drop=True)
+        df = df.sort_values(["Date", "Location"], kind="stable").reset_index(drop=True)
     except Exception:
         pass
     return df
 
 def save_df(df: pd.DataFrame):
-    df_out = df.copy()
-    df_out["Date"] = pd.to_datetime(df_out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    df_out.to_csv(CSV_PATH, index=False)
+    out = df.copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out.to_csv(CSV_PATH, index=False)
     st.cache_data.clear()
 
 def make_map(deck_df: pd.DataFrame):
@@ -216,13 +219,13 @@ def make_map(deck_df: pd.DataFrame):
 with st.sidebar:
     st.header("➕ Add / Update Daily Reading")
     df_all = load_data()
-    loc = st.selectbox("Dam (Location)", sorted(df_all["Location"].dropna().unique()))
-    d = st.date_input("Date", value=date.today())
+    sel_loc = st.selectbox("Dam (Location)", sorted(df_all["Location"].dropna().unique()))
+    sel_date = st.date_input("Date", value=date.today())
     wl = st.number_input("Water Level (ft)", step=0.1, format="%.2f")
     if st.button("Save Reading", use_container_width=True):
-        df_new = upsert_reading(df_all, d, loc, wl)
+        df_new = upsert_reading(df_all, sel_date, sel_loc, wl)
         save_df(df_new)
-        st.success(f"Saved {loc} @ {d} = {wl:.2f} ft")
+        st.success(f"Saved {sel_loc} @ {sel_date} = {wl:.2f} ft")
 
 # ───────────────────── MAIN DASHBOARD ─────────────────────
 df = with_status(load_data())
