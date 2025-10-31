@@ -48,6 +48,17 @@ STATUS_COLORS = {
     "Unknown": [120, 120, 120],
 }
 
+# For table coloring (hex)
+STATUS_BG = {
+    "Low Storage": "#ffdddd",        # red-ish
+    "Storage Medium": "#fff7cc",     # yellow-ish
+    "Storage High": "#ddffdd",       # green-ish
+    "Spill Watch": "#ffe8cc",
+    "Spill Anytime": "#ffd6d6",
+    "Spilling": "#ffcccc",
+    "Unknown": "#eeeeee",
+}
+
 # ──────────────────────── HELPERS ────────────────────────
 def _clean_header(s: str) -> str:
     """Remove quotes and collapse whitespace/newlines."""
@@ -131,6 +142,12 @@ def with_status(df: pd.DataFrame) -> pd.DataFrame:
         axis=1
     )
     return df
+
+def _pct_full_row(wl, npl, dsl):
+    """Fraction full between DSL and NPL; >1 means above NPL; <0 below DSL."""
+    if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl) or (npl == dsl):
+        return pd.NA
+    return (wl - dsl) / (npl - dsl)
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
     if loc not in df["Location"].unique():
@@ -252,22 +269,48 @@ else:
 if filt_locs:
     view = view[view["Location"].isin(filt_locs)]
 
+# Add fraction-full between DSL and NPL for ranking (clipped 0..1 for display)
+view = view.copy()
+view["Frac_Full"] = view.apply(
+    lambda r: _pct_full_row(r["Water_Level_ft"], r["NPL (ft)"], r["DSL (ft)"]),
+    axis=1
+).astype("Float64")
+view["Frac_Full_Clip"] = view["Frac_Full"].clip(lower=0, upper=1)
+
 # KPIs
 k1, k2, k3, k4 = st.columns(4)
 if not view.empty:
     k1.metric("Dams shown", view["Location"].nunique())
-    k2.metric("Max WL (ft)", f"{view['Water_Level_ft'].max():.2f}")
-    k3.metric("Min WL (ft)", f"{view['Water_Level_ft'].min():.2f}")
+
+    # Max / Min by fraction-full
+    max_val = view["Frac_Full_Clip"].max()
+    min_val = view["Frac_Full_Clip"].min()
+    max_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == max_val, "Location"].unique()))
+    min_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == min_val, "Location"].unique()))
+
+    k2.metric("Dam(s) with Max Capacity", max_names if max_names else "—")
+    k3.metric("Dam(s) with Lowest Capacity", min_names if min_names else "—")
     k4.metric("Spill Watch/Anytime/Spilling",
               int(view["Status"].isin(["Spill Watch", "Spill Anytime", "Spilling"]).sum()))
 else:
     for k in (k1, k2, k3, k4):
         k.metric("-", "-")
 
-# Data Table
+# Data Table (Status color-coded)
 st.markdown("### 📋 Data")
 cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status"]
-st.dataframe(view[cols_show].sort_values(["Location"]), use_container_width=True)
+
+def _style_status(val):
+    bg = STATUS_BG.get(val, "#eeeeee")
+    return f"background-color: {bg}; color: black;"
+
+df_display = view[cols_show].sort_values(["Location"]).reset_index(drop=True)
+try:
+    styled = df_display.style.applymap(_style_status, subset=["Status"])
+    st.dataframe(styled, use_container_width=True)
+except Exception:
+    # Fallback if Styler not supported
+    st.dataframe(df_display, use_container_width=True)
 
 # Chart
 if not view.empty:
