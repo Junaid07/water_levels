@@ -1,6 +1,6 @@
 # app.py
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -61,7 +61,6 @@ STATUS_BG = {
 
 # ──────────────────────── HELPERS ────────────────────────
 def _clean_header(s: str) -> str:
-    """Remove quotes and collapse whitespace/newlines."""
     s = str(s).replace('"', '')
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -113,11 +112,9 @@ def load_data() -> pd.DataFrame:
           .apply(lambda g: g.ffill().bfill())
           .reset_index(level=0, drop=True)
     )
-
     return df
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
-    # Precedence from your spec
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
         if not pd.isna(wl) and not pd.isna(dsl) and abs(wl - dsl) <= 5:
             return "Low Storage"
@@ -144,27 +141,50 @@ def with_status(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _pct_full_row(wl, npl, dsl):
-    """Fraction full between DSL and NPL; >1 means above NPL; <0 below DSL."""
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl) or (npl == dsl):
         return pd.NA
     return (wl - dsl) / (npl - dsl)
+
+def _trend_label_from_slice(s: pd.Series, dates: pd.Series) -> str:
+    """
+    Return Rising / Falling / Stable based on per-day change over the slice.
+    Threshold = 0.5 ft/day. If <2 readings → No Data.
+    """
+    s = s.dropna()
+    if len(s) < 2:
+        return "No Data"
+    dmin, dmax = dates.min(), dates.max()
+    span_days = max((dmax - dmin).days, 1)
+    change = float(s.iloc[-1] - s.iloc[0])
+    per_day = change / span_days
+    if per_day >= 0.5:
+        return "Rising"
+    if per_day <= -0.5:
+        return "Falling"
+    return "Stable"
+
+def compute_trend_for_loc_asof(df_all: pd.DataFrame, loc: str, as_of: date, window: int = 7) -> str:
+    mask = (df_all["Location"] == loc) & (df_all["Date"] <= as_of)
+    hist = df_all.loc[mask].sort_values("Date")
+    if hist.empty:
+        return "No Data"
+    start_date = as_of - timedelta(days=window - 1)
+    hist = hist[hist["Date"] >= start_date]
+    return _trend_label_from_slice(hist["Water_Level_ft"], hist["Date"])
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
     if loc not in df["Location"].unique():
         st.error("Location not found in static data. Add one base row first.")
         st.stop()
-
     static_row = df[df["Location"] == loc].iloc[0].to_dict()
     new_row = {k: static_row.get(k, None) for k in df.columns}
     new_row["Date"] = d
     new_row["Water_Level_ft"] = wl
-
     m = (df["Location"] == loc) & (df["Date"] == d)
     if m.any():
         df.loc[m, "Water_Level_ft"] = wl
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-
     return df.sort_values(["Date", "Location"]).reset_index(drop=True)
 
 def save_df(df: pd.DataFrame):
@@ -183,17 +203,13 @@ def _safe_float(x):
         return None
 
 def make_map(deck_df: pd.DataFrame):
-    """Build a robust PyDeck map using plain Python dict records."""
     df_map = deck_df.copy()
-
-    # Only rows with valid numeric coordinates
     df_map["lat"] = df_map["Latitude"].apply(_safe_float)
     df_map["lon"] = df_map["Longitude"].apply(_safe_float)
     df_map = df_map[df_map["lat"].notnull() & df_map["lon"].notnull()]
     if df_map.empty:
         return None
 
-    # Prepare plain dict records (native types only)
     def _row_to_record(r):
         return {
             "Location": str(r["Location"]) if r["Location"] is not None else "",
@@ -219,7 +235,7 @@ def make_map(deck_df: pd.DataFrame):
 
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=records,                            # ← list of dicts (fully serializable)
+        data=records,
         get_position="[Longitude, Latitude]",
         get_fill_color="color",
         get_radius=8000,
@@ -269,7 +285,7 @@ else:
 if filt_locs:
     view = view[view["Location"].isin(filt_locs)]
 
-# Add fraction-full between DSL and NPL for ranking (clipped 0..1 for display)
+# Add fraction-full for KPIs
 view = view.copy()
 view["Frac_Full"] = view.apply(
     lambda r: _pct_full_row(r["Water_Level_ft"], r["NPL (ft)"], r["DSL (ft)"]),
@@ -277,17 +293,22 @@ view["Frac_Full"] = view.apply(
 ).astype("Float64")
 view["Frac_Full_Clip"] = view["Frac_Full"].clip(lower=0, upper=1)
 
+# Add Trend per row (last ≤7 days up to row Date)
+def _trend_row(r):
+    return compute_trend_for_loc_asof(df, r["Location"], r["Date"], window=7)
+view["Trend"] = view.apply(_trend_row, axis=1)
+# Pretty arrows
+ARROWS = {"Rising": "▲ Rising", "Falling": "▼ Falling", "Stable": "▬ Stable", "No Data": "—"}
+view["TrendDisp"] = view["Trend"].map(ARROWS).fillna("—")
+
 # KPIs
 k1, k2, k3, k4 = st.columns(4)
 if not view.empty:
     k1.metric("Dams shown", view["Location"].nunique())
-
-    # Max / Min by fraction-full
     max_val = view["Frac_Full_Clip"].max()
     min_val = view["Frac_Full_Clip"].min()
     max_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == max_val, "Location"].unique()))
     min_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == min_val, "Location"].unique()))
-
     k2.metric("Dam(s) with Max Capacity", max_names if max_names else "—")
     k3.metric("Dam(s) with Lowest Capacity", min_names if min_names else "—")
     k4.metric("Spill Watch/Anytime/Spilling",
@@ -296,32 +317,46 @@ else:
     for k in (k1, k2, k3, k4):
         k.metric("-", "-")
 
-# Data Table (Status color-coded)
+# Data Table (Status color-coded) + Trend column
 st.markdown("### 📋 Data")
-cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status"]
+cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status", "TrendDisp"]
+df_display = view[cols_show].rename(columns={"TrendDisp": "Trend"}).sort_values(["Location"]).reset_index(drop=True)
 
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
     return f"background-color: {bg}; color: black;"
 
-df_display = view[cols_show].sort_values(["Location"]).reset_index(drop=True)
 try:
     styled = df_display.style.applymap(_style_status, subset=["Status"])
     st.dataframe(styled, use_container_width=True)
 except Exception:
-    # Fallback if Styler not supported
     st.dataframe(df_display, use_container_width=True)
 
-# Chart
-if not view.empty:
-    st.markdown("### 📈 Water Levels by Dam")
-    fig = px.bar(
-        view.sort_values(["Location"]),
-        x="Location", y="Water_Level_ft", color="Status",
-        color_discrete_map={k: f"rgb({v[0]},{v[1]},{v[2]})" for k, v in STATUS_COLORS.items()},
-        title=f"Water Levels on {view['Date'].max() if not only_latest else 'Latest per Dam'}"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+# ───── 7-Day Trend Chart for Selected Dam ─────
+st.markdown("### 📈 Water Level Trend (Past 7 Days)")
+if not df.empty:
+    # Choose dam from currently filtered set if available, else from all
+    eligible = sorted(view["Location"].unique()) if not view.empty else sorted(df["Location"].unique())
+    dam_for_trend = st.selectbox("Select a dam for trend", eligible)
+    # Window: last 7 days up to selected show_date (or latest if only_latest checked)
+    end_date = (df[df["Location"] == dam_for_trend]["Date"].max()
+                if only_latest else show_date)
+    start_date = end_date - timedelta(days=6)
+    win = df[(df["Location"] == dam_for_trend) &
+             (df["Date"] >= start_date) &
+             (df["Date"] <= end_date)].sort_values("Date")
+
+    if win.empty:
+        st.info("No readings available for the selected dam in the last 7 days.")
+    else:
+        trend_now = _trend_label_from_slice(win["Water_Level_ft"], win["Date"])
+        fig = px.line(
+            win, x="Date", y="Water_Level_ft", markers=True,
+            title=f"{dam_for_trend} • last { (end_date - start_date).days + 1 } days (available)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        # Small badge
+        st.caption(f"Trend: {ARROWS.get(trend_now, trend_now)}")
 
 # Map
 st.markdown("### 🗺️ Dams on Map (colored by Status)")
