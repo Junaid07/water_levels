@@ -128,22 +128,33 @@ def load_data() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
+    # Missing or invalid data
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
-        if not pd.isna(wl) and not pd.isna(dsl) and abs(wl - dsl) <= 5:
-            return "Low Storage"
         return "Unknown"
+
+    # 1) BELOW DSL → extremely low storage
+    if wl < dsl:
+        return "Low Storage"
+
+    # 2) Spilling / near-spill conditions
     if wl > npl:
         return "Spilling"
     if abs(wl - npl) < 1e-9:
         return "Spill Anytime"
     if abs(wl - npl) <= 2:
         return "Spill Watch"
-    if abs(wl - dsl) <= 5:
+
+    # 3) Low storage near DSL (within 5 ft)
+    if wl - dsl <= 5:
         return "Low Storage"
+
+    # 4) Middle ranges
     diff = npl - wl
     if diff < 5:
         return "Storage High"
+
     return "Storage Medium"
+
 
 def with_status(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
