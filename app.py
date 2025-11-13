@@ -71,6 +71,15 @@ def ensure_csv():
 
 @st.cache_data(ttl=30)
 def load_data() -> pd.DataFrame:
+    """
+    Load dams_data.csv, normalize headers, fix Location spacing,
+    parse dates, make numeric, and forward/back-fill static columns
+    (Height, DSL, NPL, Latitude, etc.) for each dam.
+    This fixes:
+      • NaN static values on future dates
+      • 'Unknown' Status / missing coordinates
+      • Duplicate dam names caused by trailing spaces
+    """
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
 
@@ -93,6 +102,11 @@ def load_data() -> pd.DataFrame:
 
     # 4) Parse types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    # 🔹 IMPORTANT: normalize Location to remove trailing / leading spaces
+    # This fixes duplicate entries like "Dhurnal" vs "Dhurnal ".
+    df["Location"] = df["Location"].astype(str).str.strip()
+
     num_cols = [
         "Water_Level_ft", "DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
         "Gross Storage Capacity (Aft)", "Live storage (Aft)",
@@ -105,14 +119,13 @@ def load_data() -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # 5) Fill static columns per dam (forward/back-fill)
+    #    Use transform() per column – robust index alignment.
+    df = df.sort_values(["Location", "Date"])
     static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
-    df[static_cols] = (
-        df.sort_values(["Location", "Date"])
-          .groupby("Location")[static_cols]
-          .apply(lambda g: g.ffill().bfill())
-          .reset_index(level=0, drop=True)
-    )
-    return df
+    for col in static_cols:
+        df[col] = df.groupby("Location")[col].transform(lambda s: s.ffill().bfill())
+
+    return df.reset_index(drop=True)
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
@@ -173,14 +186,16 @@ def compute_trend_for_loc_asof(df_all: pd.DataFrame, loc: str, as_of: date, wind
     return _trend_label_from_slice(hist["Water_Level_ft"], hist["Date"])
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
-    if loc not in df["Location"].unique():
+    # Ensure Location normalization also here
+    loc_norm = str(loc).strip()
+    if loc_norm not in df["Location"].unique():
         st.error("Location not found in static data. Add one base row first.")
         st.stop()
-    static_row = df[df["Location"] == loc].iloc[0].to_dict()
+    static_row = df[df["Location"] == loc_norm].iloc[0].to_dict()
     new_row = {k: static_row.get(k, None) for k in df.columns}
     new_row["Date"] = d
     new_row["Water_Level_ft"] = wl
-    m = (df["Location"] == loc) & (df["Date"] == d)
+    m = (df["Location"] == loc_norm) & (df["Date"] == d)
     if m.any():
         df.loc[m, "Water_Level_ft"] = wl
     else:
@@ -297,7 +312,6 @@ view["Frac_Full_Clip"] = view["Frac_Full"].clip(lower=0, upper=1)
 def _trend_row(r):
     return compute_trend_for_loc_asof(df, r["Location"], r["Date"], window=7)
 view["Trend"] = view.apply(_trend_row, axis=1)
-# Pretty arrows
 ARROWS = {"Rising": "▲ Rising", "Falling": "▼ Falling", "Stable": "▬ Stable", "No Data": "—"}
 view["TrendDisp"] = view["Trend"].map(ARROWS).fillna("—")
 
@@ -335,10 +349,8 @@ except Exception:
 # ───── 7-Day Trend Chart for Selected Dam ─────
 st.markdown("### 📈 Water Level Trend (Past 7 Days)")
 if not df.empty:
-    # Choose dam from currently filtered set if available, else from all
     eligible = sorted(view["Location"].unique()) if not view.empty else sorted(df["Location"].unique())
     dam_for_trend = st.selectbox("Select a dam for trend", eligible)
-    # Window: last 7 days up to selected show_date (or latest if only_latest checked)
     end_date = (df[df["Location"] == dam_for_trend]["Date"].max()
                 if only_latest else show_date)
     start_date = end_date - timedelta(days=6)
@@ -355,7 +367,6 @@ if not df.empty:
             title=f"{dam_for_trend} • last { (end_date - start_date).days + 1 } days (available)"
         )
         st.plotly_chart(fig, use_container_width=True)
-        # Small badge
         st.caption(f"Trend: {ARROWS.get(trend_now, trend_now)}")
 
 # Map
