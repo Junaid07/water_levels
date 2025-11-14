@@ -277,8 +277,19 @@ df = with_status(load_data())
 # Filters
 f1, f2, f3 = st.columns([1.1, 1.2, 1])
 with f1:
-    default_day = df["Date"].max() if not df.empty else date.today()
+    # Robust default date selection
+    if df.empty or df["Date"].isna().all():
+        default_day = date.today()
+    else:
+        # Re-parse to datetime to avoid mixed-type issues
+        _dates = pd.to_datetime(df["Date"], errors="coerce")
+        if _dates.dropna().empty:
+            default_day = date.today()
+        else:
+            default_day = _dates.dropna().max().date()
+
     show_date = st.date_input("Show date", value=default_day)
+
 with f2:
     filt_locs = st.multiselect("Filter dams", sorted(df["Location"].dropna().unique()))
 with f3:
