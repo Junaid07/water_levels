@@ -384,7 +384,7 @@ if deck is not None:
         st.pydeck_chart(deck)
         # 🔹 Simple legend under the map
         st.markdown(
-            "**Legend**  \n"
+            "****  \n"
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
             "🟩 High Storage"
