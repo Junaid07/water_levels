@@ -38,14 +38,15 @@ REQUIRED_COLS = [
     "Catchment Area (Sq. Km)", "Latitude", "Longitude",
 ]
 
+# Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Low Storage": [33, 150, 243],
-    "Medium Storage": [144, 202, 249],
-    "High Storage": [76, 175, 80],
-    "Spill Watch": [255, 152, 0],
-    "Spill Anytime": [229, 57, 53],
-    "Spilling": [183, 28, 28],
-    "Unknown": [120, 120, 120],
+    "Low Storage": [255, 0, 0],        # 🔴 red
+    "Medium Storage": [255, 140, 0],   # 🟠 orange
+    "High Storage": [0, 200, 0],       # 🟢 green
+    "Spill Watch": [255, 215, 0],      # yellow
+    "Spill Anytime": [255, 69, 0],     # orange-red
+    "Spilling": [139, 0, 0],           # dark red
+    "Unknown": [120, 120, 120],        # grey
 }
 
 # For table coloring (hex)
@@ -75,10 +76,6 @@ def load_data() -> pd.DataFrame:
     Load dams_data.csv, normalize headers, fix Location spacing,
     parse dates, make numeric, and forward/back-fill static columns
     (Height, DSL, NPL, Latitude, etc.) for each dam.
-    This fixes:
-      • NaN static values on future dates
-      • 'Unknown' Status / missing coordinates
-      • Duplicate dam names caused by trailing spaces
     """
     ensure_csv()
     df = pd.read_csv(CSV_PATH)
@@ -103,8 +100,7 @@ def load_data() -> pd.DataFrame:
     # 4) Parse types
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
 
-    # 🔹 IMPORTANT: normalize Location to remove trailing / leading spaces
-    # This fixes duplicate entries like "Dhurnal" vs "Dhurnal ".
+    # Normalize Location
     df["Location"] = df["Location"].astype(str).str.strip()
 
     num_cols = [
@@ -119,7 +115,6 @@ def load_data() -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # 5) Fill static columns per dam (forward/back-fill)
-    #    Use transform() per column – robust index alignment.
     df = df.sort_values(["Location", "Date"])
     static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
     for col in static_cols:
@@ -128,33 +123,22 @@ def load_data() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
-    # Missing or invalid data
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
         return "Unknown"
-
-    # 1) BELOW DSL → extremely low storage
     if wl < dsl:
         return "Low Storage"
-
-    # 2) Spilling / near-spill conditions
     if wl > npl:
         return "Spilling"
     if abs(wl - npl) < 1e-9:
         return "Spill Anytime"
     if abs(wl - npl) <= 2:
         return "Spill Watch"
-
-    # 3) Low storage near DSL (within 5 ft)
     if wl - dsl <= 5:
         return "Low Storage"
-
-    # 4) Middle ranges
     diff = npl - wl
     if diff < 5:
         return "High Storage"
-
     return "Medium Storage"
-
 
 def with_status(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -170,10 +154,6 @@ def _pct_full_row(wl, npl, dsl):
     return (wl - dsl) / (npl - dsl)
 
 def _trend_label_from_slice(s: pd.Series, dates: pd.Series) -> str:
-    """
-    Return Rising / Falling / Stable based on per-day change over the slice.
-    Threshold = 0.5 ft/day. If <2 readings → No Data.
-    """
     s = s.dropna()
     if len(s) < 2:
         return "No Data"
@@ -197,7 +177,6 @@ def compute_trend_for_loc_asof(df_all: pd.DataFrame, loc: str, as_of: date, wind
     return _trend_label_from_slice(hist["Water_Level_ft"], hist["Date"])
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
-    # Ensure Location normalization also here
     loc_norm = str(loc).strip()
     if loc_norm not in df["Location"].unique():
         st.error("Location not found in static data. Add one base row first.")
@@ -237,12 +216,15 @@ def make_map(deck_df: pd.DataFrame):
         return None
 
     def _row_to_record(r):
+        wl = _safe_float(r["Water_Level_ft"])
+        npl = _safe_float(r["NPL (ft)"])
+        dsl = _safe_float(r["DSL (ft)"])
         return {
             "Location": str(r["Location"]) if r["Location"] is not None else "",
             "Status": str(r["Status"]) if r["Status"] is not None else "Unknown",
-            "WL_ft": _safe_float(r["Water_Level_ft"]),
-            "NPL_ft": _safe_float(r["NPL (ft)"]),
-            "DSL_ft": _safe_float(r["DSL (ft)"]),
+            "WL_ft": round(wl, 2) if wl is not None else None,
+            "NPL_ft": round(npl, 2) if npl is not None else None,
+            "DSL_ft": round(dsl, 2) if dsl is not None else None,
             "Date_str": str(r["Date"]),
             "Latitude": float(r["lat"]),
             "Longitude": float(r["lon"]),
@@ -347,6 +329,11 @@ st.markdown("### 📋 Data")
 cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status", "TrendDisp"]
 df_display = view[cols_show].rename(columns={"TrendDisp": "Trend"}).sort_values(["Location"]).reset_index(drop=True)
 
+# 🔹 Round key columns to 2 decimals for display
+for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
+    if col in df_display.columns:
+        df_display[col] = df_display[col].round(2)
+
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
     return f"background-color: {bg}; color: black;"
@@ -386,6 +373,13 @@ deck = make_map(view)
 if deck is not None:
     try:
         st.pydeck_chart(deck)
+        # 🔹 Simple legend under the map
+        st.markdown(
+            "**Legend**  \n"
+            "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
+            "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
+            "🟩 High Storage"
+        )
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
 else:
