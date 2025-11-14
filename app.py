@@ -40,8 +40,8 @@ REQUIRED_COLS = [
 
 STATUS_COLORS = {
     "Low Storage": [33, 150, 243],
-    "Storage Medium": [144, 202, 249],
-    "Storage High": [76, 175, 80],
+    "Medium Storage": [144, 202, 249],
+    "High Storage": [76, 175, 80],
     "Spill Watch": [255, 152, 0],
     "Spill Anytime": [229, 57, 53],
     "Spilling": [183, 28, 28],
@@ -51,8 +51,8 @@ STATUS_COLORS = {
 # For table coloring (hex)
 STATUS_BG = {
     "Low Storage": "#ffdddd",        # red-ish
-    "Storage Medium": "#fff7cc",     # yellow-ish
-    "Storage High": "#ddffdd",       # green-ish
+    "Medium Storage": "#fff7cc",     # yellow-ish
+    "High Storage": "#ddffdd",       # green-ish
     "Spill Watch": "#ffe8cc",
     "Spill Anytime": "#ffd6d6",
     "Spilling": "#ffcccc",
@@ -151,9 +151,9 @@ def compute_status_row(wl: float, npl: float, dsl: float) -> str:
     # 4) Middle ranges
     diff = npl - wl
     if diff < 5:
-        return "Storage High"
+        return "High Storage"
 
-    return "Storage Medium"
+    return "Medium Storage"
 
 
 def with_status(df: pd.DataFrame) -> pd.DataFrame:
@@ -334,9 +334,9 @@ if not view.empty:
     min_val = view["Frac_Full_Clip"].min()
     max_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == max_val, "Location"].unique()))
     min_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == min_val, "Location"].unique()))
-    k2.metric("Dam(s) with Max Capacity", max_names if max_names else "—")
-    k3.metric("Dam(s) with Lowest Capacity", min_names if min_names else "—")
-    k4.metric("Spill Watch/Anytime/Spilling",
+    k2.metric("Dam(s) with Max Storage", max_names if max_names else "—")
+    k3.metric("Dam(s) with Lowest Storage", min_names if min_names else "—")
+    k4.metric("Spill Watch/Spill Anytime/Spilling",
               int(view["Status"].isin(["Spill Watch", "Spill Anytime", "Spilling"]).sum()))
 else:
     for k in (k1, k2, k3, k4):
