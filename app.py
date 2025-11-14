@@ -325,14 +325,22 @@ else:
         k.metric("-", "-")
 
 # Data Table (Status color-coded) + Trend column
+# Data Table (Status color-coded) + Trend column
 st.markdown("### 📋 Data")
 cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status", "TrendDisp"]
-df_display = view[cols_show].rename(columns={"TrendDisp": "Trend"}).sort_values(["Location"]).reset_index(drop=True)
+df_display = (
+    view[cols_show]
+    .rename(columns={"TrendDisp": "Trend"})
+    .sort_values(["Location"])
+    .reset_index(drop=True)
+)
 
-# 🔹 Round key columns to 2 decimals for display
+# 🔹 Format key numeric columns to 2 decimals as strings (for display only)
 for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
     if col in df_display.columns:
-        df_display[col] = df_display[col].round(2)
+        df_display[col] = df_display[col].apply(
+            lambda v: f"{v:.2f}" if pd.notna(v) else ""
+        )
 
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
@@ -343,6 +351,7 @@ try:
     st.dataframe(styled, use_container_width=True)
 except Exception:
     st.dataframe(df_display, use_container_width=True)
+
 
 # ───── 7-Day Trend Chart for Selected Dam ─────
 st.markdown("### 📈 Water Level Trend (Past 7 Days)")
