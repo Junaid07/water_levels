@@ -1,13 +1,12 @@
-# app.py
 import re
 from datetime import date, timedelta
 from pathlib import Path
 
+import math
 import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
-import math
 
 # ───────────────────────── CONFIG ─────────────────────────
 st.set_page_config(page_title="Dam Water Levels Dashboard", layout="wide")
@@ -17,58 +16,75 @@ CSV_PATH = Path("dams_data_new.csv")
 
 # Map messy spreadsheet headers → canonical names used in the app
 RAW_TO_CANON = {
-    'Height \n(ft)': "Height (ft)",
-    'Completion Cost \n(million)': "Completion Cost (million)",
-    'Gross Storage Capacity \n(Aft)': "Gross Storage Capacity (Aft)",
-    'Live storage \n(Aft)': "Live storage (Aft)",
-    'C.C.A. \n(Acres)': "C.C.A. (Acres)",
-    'Capacity of Channel \n(Cfs)': "Capacity of Channel (Cfs)",
-    'Length of Canal \n(ft)': "Length of Canal (ft)",
-    'DSL \n(ft)': "DSL (ft)",
-    'NPL \n(ft)': "NPL (ft)",
-    'HFL \n(ft)': "HFL (ft)",
-    'Catchment Area \n(Sq. Km)': "Catchment Area (Sq. Km)",
+    "Height \n(ft)": "Height (ft)",
+    "Completion Cost \n(million)": "Completion Cost (million)",
+    "Gross Storage Capacity \n(Aft)": "Gross Storage Capacity (Aft)",
+    "Live storage \n(Aft)": "Live storage (Aft)",
+    "C.C.A. \n(Acres)": "C.C.A. (Acres)",
+    "Capacity of Channel \n(Cfs)": "Capacity of Channel (Cfs)",
+    "Length of Canal \n(ft)": "Length of Canal (ft)",
+    "DSL \n(ft)": "DSL (ft)",
+    "NPL \n(ft)": "NPL (ft)",
+    "HFL \n(ft)": "HFL (ft)",
+    "Catchment Area \n(Sq. Km)": "Catchment Area (Sq. Km)",
 }
 
 REQUIRED_COLS = [
-    "Date", "Location", "Water_Level_ft",
-    "Height (ft)", "Gross Storage Capacity (Aft)", "Live storage (Aft)",
-    "C.C.A. (Acres)", "Capacity of Channel (Cfs)", "Length of Canal (ft)",
-    "DSL (ft)", "NPL (ft)", "HFL (ft)", "River / Nullah", "Year of Completion",
-    "Catchment Area (Sq. Km)", "Latitude", "Longitude",
+    "Date",
+    "Location",
+    "Water_Level_ft",
+    "Height (ft)",
+    "Gross Storage Capacity (Aft)",
+    "Live storage (Aft)",
+    "C.C.A. (Acres)",
+    "Capacity of Channel (Cfs)",
+    "Length of Canal (ft)",
+    "DSL (ft)",
+    "NPL (ft)",
+    "HFL (ft)",
+    "River / Nullah",
+    "Year of Completion",
+    "Catchment Area (Sq. Km)",
+    "Latitude",
+    "Longitude",
 ]
 
 # Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Low Storage": [255, 0, 0],        # 🔴 red
-    "Medium Storage": [255, 140, 0],   # 🟠 orange
-    "High Storage": [0, 200, 0],       # 🟢 green
-    "Spill Watch": [255, 215, 0],      # yellow
-    "Spill Anytime": [255, 69, 0],     # orange-red
-    "Spilling": [139, 0, 0],           # dark red
-    "Unknown": [120, 120, 120],        # grey
+    "Low Storage": [255, 0, 0],  # red
+    "Medium Storage": [255, 140, 0],  # orange
+    "High Storage": [0, 200, 0],  # green
+    "Spill Watch": [255, 215, 0],  # yellow
+    "Spill Anytime": [255, 69, 0],  # orange-red
+    "Spilling": [139, 0, 0],  # dark red
+    "Unknown": [120, 120, 120],  # grey
 }
+
+ALERT_STATUSES = {"Spill Watch", "Spill Anytime", "Spilling"}
 
 # For table coloring (hex)
 STATUS_BG = {
-    "Low Storage": "#ffdddd",        # red-ish
-    "Medium Storage": "#fff7cc",     # yellow-ish
-    "High Storage": "#ddffdd",       # green-ish
-    "Spill Watch": "#ffe8cc",
-    "Spill Anytime": "#ffd6d6",
-    "Spilling": "#ffcccc",
+    "Low Storage": "#ffdddd",  # light red
+    "Medium Storage": "#fff7cc",  # light yellow
+    "High Storage": "#ddffdd",  # light green
+    # darker, more alarming reds for spill-related statuses
+    "Spill Watch": "#ff9999",
+    "Spill Anytime": "#ff6666",
+    "Spilling": "#cc0000",
     "Unknown": "#eeeeee",
 }
 
 # ──────────────────────── HELPERS ────────────────────────
 def _clean_header(s: str) -> str:
-    s = str(s).replace('"', '')
+    s = str(s).replace('"', "")
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 def ensure_csv():
     if not CSV_PATH.exists():
         pd.DataFrame(columns=REQUIRED_COLS).to_csv(CSV_PATH, index=False)
+
 
 @st.cache_data(ttl=30)
 def load_data() -> pd.DataFrame:
@@ -97,22 +113,26 @@ def load_data() -> pd.DataFrame:
         st.error(f"CSV is missing required columns after normalization: {missing}")
         st.stop()
 
-    # 4) Parse types
-    df["Date"] = pd.to_datetime(
-        df["Date"],
-        dayfirst=True,      # <── important
-        errors="coerce"
-    ).dt.date
+    # 4) Parse types (day/month/year in file)
+    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.date
 
     # Normalize Location
     df["Location"] = df["Location"].astype(str).str.strip()
 
     num_cols = [
-        "Water_Level_ft", "DSL (ft)", "NPL (ft)", "HFL (ft)", "Height (ft)",
-        "Gross Storage Capacity (Aft)", "Live storage (Aft)",
-        "C.C.A. (Acres)", "Capacity of Channel (Cfs)",
-        "Length of Canal (ft)", "Catchment Area (Sq. Km)",
-        "Latitude", "Longitude",
+        "Water_Level_ft",
+        "DSL (ft)",
+        "NPL (ft)",
+        "HFL (ft)",
+        "Height (ft)",
+        "Gross Storage Capacity (Aft)",
+        "Live storage (Aft)",
+        "C.C.A. (Acres)",
+        "Capacity of Channel (Cfs)",
+        "Length of Canal (ft)",
+        "Catchment Area (Sq. Km)",
+        "Latitude",
+        "Longitude",
     ]
     for c in num_cols:
         if c in df.columns:
@@ -120,11 +140,14 @@ def load_data() -> pd.DataFrame:
 
     # 5) Fill static columns per dam (forward/back-fill)
     df = df.sort_values(["Location", "Date"])
-    static_cols = [c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]]
+    static_cols = [
+        c for c in REQUIRED_COLS if c not in ["Date", "Location", "Water_Level_ft"]
+    ]
     for col in static_cols:
         df[col] = df.groupby("Location")[col].transform(lambda s: s.ffill().bfill())
 
     return df.reset_index(drop=True)
+
 
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
@@ -144,18 +167,21 @@ def compute_status_row(wl: float, npl: float, dsl: float) -> str:
         return "High Storage"
     return "Medium Storage"
 
+
 def with_status(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["Status"] = df.apply(
         lambda r: compute_status_row(r["Water_Level_ft"], r["NPL (ft)"], r["DSL (ft)"]),
-        axis=1
+        axis=1,
     )
     return df
+
 
 def _pct_full_row(wl, npl, dsl):
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl) or (npl == dsl):
         return pd.NA
     return (wl - dsl) / (npl - dsl)
+
 
 def _trend_label_from_slice(s: pd.Series, dates: pd.Series) -> str:
     s = s.dropna()
@@ -171,7 +197,10 @@ def _trend_label_from_slice(s: pd.Series, dates: pd.Series) -> str:
         return "Falling"
     return "Stable"
 
-def compute_trend_for_loc_asof(df_all: pd.DataFrame, loc: str, as_of: date, window: int = 7) -> str:
+
+def compute_trend_for_loc_asof(
+    df_all: pd.DataFrame, loc: str, as_of: date, window: int = 7
+) -> str:
     mask = (df_all["Location"] == loc) & (df_all["Date"] <= as_of)
     hist = df_all.loc[mask].sort_values("Date")
     if hist.empty:
@@ -179,6 +208,7 @@ def compute_trend_for_loc_asof(df_all: pd.DataFrame, loc: str, as_of: date, wind
     start_date = as_of - timedelta(days=window - 1)
     hist = hist[hist["Date"] >= start_date]
     return _trend_label_from_slice(hist["Water_Level_ft"], hist["Date"])
+
 
 def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFrame:
     loc_norm = str(loc).strip()
@@ -196,11 +226,13 @@ def upsert_reading(df: pd.DataFrame, d: date, loc: str, wl: float) -> pd.DataFra
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     return df.sort_values(["Date", "Location"]).reset_index(drop=True)
 
+
 def save_df(df: pd.DataFrame):
     out = df.copy()
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     out.to_csv(CSV_PATH, index=False)
     st.cache_data.clear()
+
 
 # ───────────────────────── MAP ─────────────────────────
 def _safe_float(x):
@@ -210,6 +242,7 @@ def _safe_float(x):
         return float(x)
     except Exception:
         return None
+
 
 def make_map(deck_df: pd.DataFrame):
     df_map = deck_df.copy()
@@ -223,16 +256,23 @@ def make_map(deck_df: pd.DataFrame):
         wl = _safe_float(r["Water_Level_ft"])
         npl = _safe_float(r["NPL (ft)"])
         dsl = _safe_float(r["DSL (ft)"])
+        status = str(r["Status"]) if r["Status"] is not None else "Unknown"
+        is_alert = status in ALERT_STATUSES
+        label = ("⚠ " if is_alert else "") + (
+            str(r["Location"]) if r["Location"] is not None else ""
+        )
         return {
-            "Location": str(r["Location"]) if r["Location"] is not None else "",
-            "Status": str(r["Status"]) if r["Status"] is not None else "Unknown",
+            "LocationLabel": label,
+            "Status": status,
             "WL_ft": round(wl, 2) if wl is not None else None,
             "NPL_ft": round(npl, 2) if npl is not None else None,
             "DSL_ft": round(dsl, 2) if dsl is not None else None,
             "Date_str": str(r["Date"]),
             "Latitude": float(r["lat"]),
             "Longitude": float(r["lon"]),
-            "color": STATUS_COLORS.get(str(r["Status"]), [120, 120, 120]),
+            # larger radius for alert dams
+            "radius": 16000 if is_alert else 8000,
+            "color": STATUS_COLORS.get(status, [120, 120, 120]),
         }
 
     records = [_row_to_record(r) for _, r in df_map.iterrows()]
@@ -240,8 +280,8 @@ def make_map(deck_df: pd.DataFrame):
         return None
 
     view_state = pdk.ViewState(
-        latitude=sum([rec["Latitude"] for rec in records]) / len(records),
-        longitude=sum([rec["Longitude"] for rec in records]) / len(records),
+        latitude=sum(rec["Latitude"] for rec in records) / len(records),
+        longitude=sum(rec["Longitude"] for rec in records) / len(records),
         zoom=6,
     )
 
@@ -250,24 +290,27 @@ def make_map(deck_df: pd.DataFrame):
         data=records,
         get_position="[Longitude, Latitude]",
         get_fill_color="color",
-        get_radius=8000,
+        get_radius="radius",
         pickable=True,
     )
 
     tooltip = {
-        "html": "<b>{Location}</b><br/>Status: {Status}"
-                "<br/>WL: {WL_ft} ft<br/>NPL: {NPL_ft} ft<br/>DSL: {DSL_ft} ft"
-                "<br/>Date: {Date_str}",
+        "html": "<b>{LocationLabel}</b><br/>Status: {Status}"
+        "<br/>WL: {WL_ft} ft<br/>NPL: {NPL_ft} ft<br/>DSL: {DSL_ft} ft"
+        "<br/>Date: {Date_str}",
         "style": {"backgroundColor": "white", "color": "black"},
     }
 
     return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
 
+
 # ────────────────────── SIDEBAR ──────────────────────
 with st.sidebar:
     st.header("➕ Add / Update Daily Reading")
     df_all = load_data()
-    sel_loc = st.selectbox("Dam (Location)", sorted(df_all["Location"].dropna().unique()))
+    sel_loc = st.selectbox(
+        "Dam (Location)", sorted(df_all["Location"].dropna().unique())
+    )
     sel_date = st.date_input("Date", value=date.today())
     wl = st.number_input("Water Level (ft)", step=0.1, format="%.2f")
     if st.button("Save Reading", use_container_width=True):
@@ -281,7 +324,6 @@ df = with_status(load_data())
 # Filters
 f1, f2, f3 = st.columns([1.1, 1.2, 1])
 with f1:
-    # Robust default date selection, assuming D/M/Y in the original file
     if df.empty or df["Date"].isna().all():
         default_day = date.today()
     else:
@@ -290,12 +332,12 @@ with f1:
             default_day = date.today()
         else:
             default_day = _dates.dropna().max().date()
-
     show_date = st.date_input("Show date", value=default_day)
 
-
 with f2:
-    filt_locs = st.multiselect("Filter dams", sorted(df["Location"].dropna().unique()))
+    filt_locs = st.multiselect(
+        "Filter dams", sorted(df["Location"].dropna().unique())
+    )
 with f3:
     only_latest = st.checkbox("Quick: only latest date for each dam", value=False)
 
@@ -310,39 +352,111 @@ if filt_locs:
 
 # Add fraction-full for KPIs
 view = view.copy()
-view["Frac_Full"] = view.apply(
-    lambda r: _pct_full_row(r["Water_Level_ft"], r["NPL (ft)"], r["DSL (ft)"]),
-    axis=1
-).astype("Float64")
+view["Frac_Full"] = (
+    view.apply(
+        lambda r: _pct_full_row(
+            r["Water_Level_ft"], r["NPL (ft)"], r["DSL (ft)"]
+        ),
+        axis=1,
+    ).astype("Float64")
+)
 view["Frac_Full_Clip"] = view["Frac_Full"].clip(lower=0, upper=1)
 
 # Add Trend per row (last ≤7 days up to row Date)
 def _trend_row(r):
     return compute_trend_for_loc_asof(df, r["Location"], r["Date"], window=7)
+
+
 view["Trend"] = view.apply(_trend_row, axis=1)
-ARROWS = {"Rising": "▲ Rising", "Falling": "▼ Falling", "Stable": "▬ Stable", "No Data": "—"}
+ARROWS = {
+    "Rising": "▲ Rising",
+    "Falling": "▼ Falling",
+    "Stable": "▬ Stable",
+    "No Data": "—",
+}
 view["TrendDisp"] = view["Trend"].map(ARROWS).fillna("—")
 
-# KPIs
-k1, k2, k3, k4 = st.columns(4)
+# ───────── KPIs IN TABS (with smaller dam names) ─────────
+st.markdown("### 🔍 Overview & Spill Alerts")
+tab_overview, tab_spill = st.tabs(
+    ["📊 Storage Overview", "⚠️ Spill Alerts"]
+)
+
 if not view.empty:
-    k1.metric("Dams shown", view["Location"].nunique())
+    # Common values
     max_val = view["Frac_Full_Clip"].max()
     min_val = view["Frac_Full_Clip"].min()
-    max_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == max_val, "Location"].unique()))
-    min_names = ", ".join(sorted(view.loc[view["Frac_Full_Clip"] == min_val, "Location"].unique()))
-    k2.metric("Dam(s) with Max Storage", max_names if max_names else "—")
-    k3.metric("Dam(s) with Lowest Storage", min_names if min_names else "—")
-    k4.metric("Spill Watch/Spill Anytime/Spilling",
-              int(view["Status"].isin(["Spill Watch", "Spill Anytime", "Spilling"]).sum()))
-else:
-    for k in (k1, k2, k3, k4):
-        k.metric("-", "-")
+    max_names = ", ".join(
+        sorted(view.loc[view["Frac_Full_Clip"] == max_val, "Location"].unique())
+    )
+    min_names = ", ".join(
+        sorted(view.loc[view["Frac_Full_Clip"] == min_val, "Location"].unique())
+    )
 
-# Data Table (Status color-coded) + Trend column
-# Data Table (Status color-coded) + Trend column
+    alert_df = view[view["Status"].isin(ALERT_STATUSES)]
+
+    with tab_overview:
+        c1, c2, c3 = st.columns([1, 2, 2])
+        with c1:
+            st.metric("Dams shown", view["Location"].nunique())
+        with c2:
+            st.markdown(
+                "<span style='font-weight:600; color:#1f4e79;'>Dam(s) with Max Storage</span>",
+                unsafe_allow_html=True,
+            )
+            if max_names:
+                st.markdown(
+                    f"<small style='color:#1f4e79;'>{max_names}</small>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown("—")
+        with c3:
+            st.markdown(
+                "<span style='font-weight:600; color:#7f0000;'>Dam(s) with Lowest Storage</span>",
+                unsafe_allow_html=True,
+            )
+            if min_names:
+                st.markdown(
+                    f"<small style='color:#7f0000;'>{min_names}</small>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown("—")
+
+    with tab_spill:
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.metric(
+                "Spill Watch / Anytime / Spilling",
+                int(alert_df["Location"].nunique()),
+            )
+        with c2:
+            if alert_df.empty:
+                st.success("No dams currently in Spill Watch / Spill Anytime / Spilling.")
+            else:
+                alert_names = ", ".join(sorted(alert_df["Location"].unique()))
+                st.markdown(
+                    f"<small style='color:#b00020; font-weight:600;'>⚠ {alert_names}</small>",
+                    unsafe_allow_html=True,
+                )
+else:
+    with tab_overview:
+        st.info("No data to show.")
+    with tab_spill:
+        st.info("No data to show.")
+
+# ───────── Data Table (Status color-coded) + Trend ─────────
 st.markdown("### 📋 Data")
-cols_show = ["Date", "Location", "Water_Level_ft", "DSL (ft)", "NPL (ft)", "Status", "TrendDisp"]
+cols_show = [
+    "Date",
+    "Location",
+    "Water_Level_ft",
+    "DSL (ft)",
+    "NPL (ft)",
+    "Status",
+    "TrendDisp",
+]
 df_display = (
     view[cols_show]
     .rename(columns={"TrendDisp": "Trend"})
@@ -350,43 +464,72 @@ df_display = (
     .reset_index(drop=True)
 )
 
-# 🔹 Format key numeric columns to 2 decimals as strings (for display only)
+# Format key numeric columns to 2 decimals as strings (for display only)
 for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
     if col in df_display.columns:
         df_display[col] = df_display[col].apply(
             lambda v: f"{v:.2f}" if pd.notna(v) else ""
         )
 
+
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
-    return f"background-color: {bg}; color: black;"
+    # white text on dark reds
+    text_color = "white" if val in ALERT_STATUSES else "black"
+    return f"background-color: {bg}; color: {text_color}; font-weight: 600;"
+
+
+def _style_trend(val):
+    if isinstance(val, str) and "▲" in val:
+        color = "#006400"  # dark green
+    elif isinstance(val, str) and "▼" in val:
+        color = "#b00020"  # dark red
+    else:
+        color = "#555555"
+    return f"color: {color}; font-weight: 600;"
+
 
 try:
-    styled = df_display.style.applymap(_style_status, subset=["Status"])
+    styled = (
+        df_display.style.applymap(_style_status, subset=["Status"]).applymap(
+            _style_trend, subset=["Trend"]
+        )
+    )
     st.dataframe(styled, use_container_width=True)
 except Exception:
     st.dataframe(df_display, use_container_width=True)
 
-
 # ───── 7-Day Trend Chart for Selected Dam ─────
 st.markdown("### 📈 Water Level Trend (Past 7 Days)")
 if not df.empty:
-    eligible = sorted(view["Location"].unique()) if not view.empty else sorted(df["Location"].unique())
+    eligible = (
+        sorted(view["Location"].unique())
+        if not view.empty
+        else sorted(df["Location"].unique())
+    )
     dam_for_trend = st.selectbox("Select a dam for trend", eligible)
-    end_date = (df[df["Location"] == dam_for_trend]["Date"].max()
-                if only_latest else show_date)
+    end_date = (
+        df[df["Location"] == dam_for_trend]["Date"].max()
+        if only_latest
+        else show_date
+    )
     start_date = end_date - timedelta(days=6)
-    win = df[(df["Location"] == dam_for_trend) &
-             (df["Date"] >= start_date) &
-             (df["Date"] <= end_date)].sort_values("Date")
+    win = df[
+        (df["Location"] == dam_for_trend)
+        & (df["Date"] >= start_date)
+        & (df["Date"] <= end_date)
+    ].sort_values("Date")
 
     if win.empty:
         st.info("No readings available for the selected dam in the last 7 days.")
     else:
         trend_now = _trend_label_from_slice(win["Water_Level_ft"], win["Date"])
         fig = px.line(
-            win, x="Date", y="Water_Level_ft", markers=True,
-            title=f"{dam_for_trend} • last { (end_date - start_date).days + 1 } days (available)"
+            win,
+            x="Date",
+            y="Water_Level_ft",
+            markers=True,
+            title=f"{dam_for_trend} • last {(end_date - start_date).days + 1} days (available)",
         )
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Trend: {ARROWS.get(trend_now, trend_now)}")
@@ -397,12 +540,13 @@ deck = make_map(view)
 if deck is not None:
     try:
         st.pydeck_chart(deck)
-        # 🔹 Simple legend under the map
+        # Legend under the map
         st.markdown(
             "****  \n"
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
-            "🟩 High Storage"
+            "🟩 High Storage &nbsp;&nbsp;&nbsp; "
+            "⚠️ Spill Watch / Anytime / Spilling"
         )
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
@@ -415,27 +559,36 @@ c1, c2 = st.columns([1, 2])
 with c1:
     pick = st.selectbox("Select a dam", sorted(df["Location"].unique()))
 with c2:
-    details = df[df["Location"] == pick].sort_values("Date").iloc[-1] \
-              if (df["Location"] == pick).any() else None
+    details = (
+        df[df["Location"] == pick].sort_values("Date").iloc[-1]
+        if (df["Location"] == pick).any()
+        else None
+    )
     if details is not None:
-        st.write({
-            "Height (ft)": details.get("Height (ft)"),
-            "Gross Storage (Aft)": details.get("Gross Storage Capacity (Aft)"),
-            "Live Storage (Aft)": details.get("Live storage (Aft)"),
-            "C.C.A. (Acres)": details.get("C.C.A. (Acres)"),
-            "Capacity of Channel (Cfs)": details.get("Capacity of Channel (Cfs)"),
-            "Length of Canal (ft)": details.get("Length of Canal (ft)"),
-            "DSL (ft)": details.get("DSL (ft)"),
-            "NPL (ft)": details.get("NPL (ft)"),
-            "HFL (ft)": details.get("HFL (ft)"),
-            "River / Nullah": details.get("River / Nullah"),
-            "Year of Completion": details.get("Year of Completion"),
-            "Catchment Area (Sq. Km)": details.get("Catchment Area (Sq. Km)"),
-            "Latitude": details.get("Latitude"),
-            "Longitude": details.get("Longitude"),
-            "Latest WL (ft)": details.get("Water_Level_ft"),
-            "Status": details.get("Status"),
-        })
+        st.write(
+            {
+                "Height (ft)": details.get("Height (ft)"),
+                "Gross Storage (Aft)": details.get("Gross Storage Capacity (Aft)"),
+                "Live Storage (Aft)": details.get("Live storage (Aft)"),
+                "C.C.A. (Acres)": details.get("C.C.A. (Acres)"),
+                "Capacity of Channel (Cfs)": details.get(
+                    "Capacity of Channel (Cfs)"
+                ),
+                "Length of Canal (ft)": details.get("Length of Canal (ft)"),
+                "DSL (ft)": details.get("DSL (ft)"),
+                "NPL (ft)": details.get("NPL (ft)"),
+                "HFL (ft)": details.get("HFL (ft)"),
+                "River / Nullah": details.get("River / Nullah"),
+                "Year of Completion": details.get("Year of Completion"),
+                "Catchment Area (Sq. Km)": details.get(
+                    "Catchment Area (Sq. Km)"
+                ),
+                "Latitude": details.get("Latitude"),
+                "Longitude": details.get("Longitude"),
+                "Latest WL (ft)": details.get("Water_Level_ft"),
+                "Status": details.get("Status"),
+            }
+        )
     else:
         st.info("No details available.")
 
