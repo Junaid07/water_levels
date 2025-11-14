@@ -98,7 +98,11 @@ def load_data() -> pd.DataFrame:
         st.stop()
 
     # 4) Parse types
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        dayfirst=True,      # <── important
+        errors="coerce"
+    ).dt.date
 
     # Normalize Location
     df["Location"] = df["Location"].astype(str).str.strip()
@@ -277,18 +281,18 @@ df = with_status(load_data())
 # Filters
 f1, f2, f3 = st.columns([1.1, 1.2, 1])
 with f1:
-    # Robust default date selection
+    # Robust default date selection, assuming D/M/Y in the original file
     if df.empty or df["Date"].isna().all():
         default_day = date.today()
     else:
-        # Re-parse to datetime to avoid mixed-type issues
-        _dates = pd.to_datetime(df["Date"], errors="coerce")
+        _dates = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
         if _dates.dropna().empty:
             default_day = date.today()
         else:
             default_day = _dates.dropna().max().date()
 
     show_date = st.date_input("Show date", value=default_day)
+
 
 with f2:
     filt_locs = st.multiselect("Filter dams", sorted(df["Location"].dropna().unique()))
