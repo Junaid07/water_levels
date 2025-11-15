@@ -182,19 +182,73 @@ def _pct_full_row(wl, npl, dsl):
     return (wl - dsl) / (npl - dsl)
 
 
-def _trend_label_from_slice(s: pd.Series, dates: pd.Series) -> str:
+def _trend_label_from_slice(
+    s: pd.Series,
+    dates: pd.Series,
+    change_thresh: float = 0.5,        # ft – min meaningful change
+    recent_window_days: int = 10       # look at last N days for "recent" slope
+) -> str:
+    """Classify hydrograph shape in the selected range.
+
+    Returns one of:
+    'Rising', 'Falling', 'Stable',
+    'Rising then Falling', 'Falling then Rising',
+    'Variable', 'No Data'
+    """
     s = s.dropna()
     if len(s) < 2:
         return "No Data"
-    dmin, dmax = dates.min(), dates.max()
-    span_days = max((dmax - dmin).days, 1)
-    change = float(s.iloc[-1] - s.iloc[0])
-    per_day = change / span_days
-    if per_day >= 0.5:
+
+    dates = pd.to_datetime(dates)
+    if dates.isna().all():
+        return "No Data"
+
+    # align indexes
+    s = s.reset_index(drop=True)
+    dates = dates.reset_index(drop=True)
+
+    first = float(s.iloc[0])
+    last = float(s.iloc[-1])
+    overall_change = last - first
+    max_val = float(s.max())
+    min_val = float(s.min())
+
+    # 1) Very small variation → Stable
+    if (max_val - min_val) < change_thresh:
+        return "Stable"
+
+    # 2) Recent slope (last recent_window_days)
+    end_time = dates.iloc[-1]
+    start_recent = end_time - pd.Timedelta(days=recent_window_days)
+    mask_recent = dates >= start_recent
+
+    if mask_recent.sum() >= 2:
+        s_recent = s[mask_recent]
+        d_recent = dates[mask_recent]
+        days_recent = max((d_recent.iloc[-1] - d_recent.iloc[0]).days, 1)
+        slope_recent = (float(s_recent.iloc[-1]) - float(s_recent.iloc[0])) / days_recent
+    else:
+        # fallback: use whole-period average slope
+        days_all = max((dates.iloc[-1] - dates.iloc[0]).days, 1)
+        slope_recent = overall_change / days_all
+
+    # 3) Decide pattern
+    if overall_change >= change_thresh and slope_recent >= 0:
         return "Rising"
-    if per_day <= -0.5:
+
+    if overall_change <= -change_thresh and slope_recent <= 0:
         return "Falling"
-    return "Stable"
+
+    if overall_change >= change_thresh and slope_recent < 0:
+        # water rose significantly but is now dropping
+        return "Rising then Falling"
+
+    if overall_change <= -change_thresh and slope_recent > 0:
+        # water fell significantly but is now recovering
+        return "Falling then Rising"
+
+    return "Variable"
+
 
 
 def compute_trend_for_loc_asof(
@@ -400,8 +454,12 @@ ARROWS = {
     "Rising": "▲ Rising",
     "Falling": "▼ Falling",
     "Stable": "▬ Stable",
+    "Rising then Falling": "▲▼ Rise then Fall",
+    "Falling then Rising": "▼▲ Fall then Rise",
+    "Variable": "≈ Variable",
     "No Data": "—",
 }
+
 view["TrendDisp"] = view["Trend"].map(ARROWS).fillna("—")
 
 # ───────── KPIs IN TABS (with smaller dam names) ─────────
