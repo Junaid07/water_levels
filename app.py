@@ -54,7 +54,6 @@ STATUS_COLORS = {
     "Low Storage": [255, 0, 0],       # red
     "Medium Storage": [255, 140, 0],  # orange
     "High Storage": [0, 200, 0],      # green
-    # for circles (non-alert only) – alerts will use icons
     "Spill Watch": [255, 215, 0],
     "Spill Anytime": [255, 69, 0],
     "Spilling": [139, 0, 0],
@@ -261,6 +260,16 @@ def make_map(deck_df: pd.DataFrame):
         label = ("⚠ " if is_alert else "") + (
             str(r["Location"]) if r["Location"] is not None else ""
         )
+
+        # color: alerts forced to yellow, others use storage color
+        if is_alert:
+            color = [255, 255, 0]  # bright yellow balloon
+        else:
+            color = STATUS_COLORS.get(status, [120, 120, 120])
+
+        # slightly larger size for alert balloons
+        size = 28 if is_alert else 22
+
         return {
             "LocationLabel": label,
             "Status": status,
@@ -270,17 +279,14 @@ def make_map(deck_df: pd.DataFrame):
             "Date_str": str(r["Date"]),
             "Latitude": float(r["lat"]),
             "Longitude": float(r["lon"]),
-            "radius": 8000,
-            "color": STATUS_COLORS.get(status, [120, 120, 120]),
+            "color": color,
             "icon": "alert",
+            "size": size,
         }
 
     records = [_row_to_record(r) for _, r in df_map.iterrows()]
     if not records:
         return None
-
-    alert_records = [rec for rec in records if rec["Status"] in ALERT_STATUSES]
-    normal_records = [rec for rec in records if rec["Status"] not in ALERT_STATUSES]
 
     view_state = pdk.ViewState(
         latitude=sum(rec["Latitude"] for rec in records) / len(records),
@@ -288,54 +294,34 @@ def make_map(deck_df: pd.DataFrame):
         zoom=6,
     )
 
-    layers = []
-
-    # Base circles for non-alert dams
-    if normal_records:
-        layers.append(
-            pdk.Layer(
-                "ScatterplotLayer",
-                data=normal_records,
-                get_position="[Longitude, Latitude]",
-                get_fill_color="color",
-                get_radius="radius",
-                pickable=True,
-            )
-        )
-
-    # Yellow alert icon (smaller, pin/triangle style)
-    if alert_records:
-        icon_url = (
-            "https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/"
-            "icon-atlas.png"
-        )
-        icon_mapping = {
-            "alert": {
-                "x": 128,
-                "y": 0,
-                "width": 128,
-                "height": 128,
-                "anchorY": 128,
-                "mask": True,
-            }
+    # Single IconLayer: all dams as balloons, colors by status
+    icon_url = (
+        "https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/"
+        "icon-atlas.png"
+    )
+    icon_mapping = {
+        "alert": {
+            "x": 128,
+            "y": 0,
+            "width": 128,
+            "height": 128,
+            "anchorY": 128,
+            "mask": True,
         }
-        for rec in alert_records:
-            rec["color"] = [255, 255, 0]  # bright yellow
+    }
 
-        layers.append(
-            pdk.Layer(
-                "IconLayer",
-                data=alert_records,
-                get_icon="icon",
-                get_size=24,      # smaller base size
-                size_scale=2,     # overall scaling → ~48 px instead of huge blob
-                get_position="[Longitude, Latitude]",
-                get_color="color",
-                pickable=True,
-                icon_atlas=icon_url,
-                icon_mapping=icon_mapping,
-            )
-        )
+    layer = pdk.Layer(
+        "IconLayer",
+        data=records,
+        get_icon="icon",
+        get_size="size",
+        size_scale=2,  # overall scaling (keeps balloons nicely sized)
+        get_position="[Longitude, Latitude]",
+        get_color="color",
+        pickable=True,
+        icon_atlas=icon_url,
+        icon_mapping=icon_mapping,
+    )
 
     tooltip = {
         "html": "<b>{LocationLabel}</b><br/>Status: {Status}"
@@ -344,8 +330,7 @@ def make_map(deck_df: pd.DataFrame):
         "style": {"backgroundColor": "white", "color": "black"},
     }
 
-    return pdk.Deck(layers=layers, initial_view_state=view_state, tooltip=tooltip)
-
+    return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
 
 
 # ────────────────────── SIDEBAR ──────────────────────
@@ -372,7 +357,9 @@ with f1:
         default_day = date.today()
     else:
         _dates = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-        default_day = _dates.dropna().max().date() if not _dates.dropna().empty else date.today()
+        default_day = (
+            _dates.dropna().max().date() if not _dates.dropna().empty else date.today()
+        )
     show_date = st.date_input("Show date", value=default_day)
 
 with f2:
@@ -614,7 +601,7 @@ if deck is not None:
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
             "🟩 High Storage &nbsp;&nbsp;&nbsp; "
-            "⚠️ Yellow Triangle: Spill Watch / Anytime / Spilling"
+            "⚠️ Yellow Balloon: Spill Watch / Anytime / Spilling"
         )
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
