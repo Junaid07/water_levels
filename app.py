@@ -541,6 +541,10 @@ st.caption(
 
 # ───────── Data Table (Status color-coded) + Trend ─────────
 st.markdown("### 📋 Data")
+st.caption(
+    "🔎 **Trend** (in the table) is based on the **last 7 days** of water levels for each dam."
+)
+
 cols_show = [
     "Date",
     "Location",
