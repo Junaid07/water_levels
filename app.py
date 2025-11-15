@@ -51,22 +51,22 @@ REQUIRED_COLS = [
 
 # Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Low Storage": [255, 0, 0],  # red
+    "Low Storage": [255, 0, 0],       # red
     "Medium Storage": [255, 140, 0],  # orange
-    "High Storage": [0, 200, 0],  # green
-    "Spill Watch": [255, 215, 0],  # yellow
-    "Spill Anytime": [255, 69, 0],  # orange-red
-    "Spilling": [139, 0, 0],  # dark red
-    "Unknown": [120, 120, 120],  # grey
+    "High Storage": [0, 200, 0],      # green
+    # for circles (non-alert only) – alerts will use icons
+    "Spill Watch": [255, 215, 0],
+    "Spill Anytime": [255, 69, 0],
+    "Spilling": [139, 0, 0],
+    "Unknown": [120, 120, 120],       # grey
 }
-
 ALERT_STATUSES = {"Spill Watch", "Spill Anytime", "Spilling"}
 
 # For table coloring (hex)
 STATUS_BG = {
-    "Low Storage": "#ffdddd",  # light red
-    "Medium Storage": "#fff7cc",  # light yellow
-    "High Storage": "#ddffdd",  # light green
+    "Low Storage": "#ffdddd",         # light red
+    "Medium Storage": "#fff7cc",      # light yellow
+    "High Storage": "#ddffdd",        # light green
     # darker, more alarming reds for spill-related statuses
     "Spill Watch": "#ff9999",
     "Spill Anytime": "#ff6666",
@@ -90,7 +90,7 @@ def ensure_csv():
 def load_data() -> pd.DataFrame:
     """
     Load dams_data.csv, normalize headers, fix Location spacing,
-    parse dates, make numeric, and forward/back-fill static columns
+    parse dates (D/M/Y), make numeric, and forward/back-fill static columns
     (Height, DSL, NPL, Latitude, etc.) for each dam.
     """
     ensure_csv()
@@ -155,11 +155,11 @@ def compute_status_row(wl: float, npl: float, dsl: float) -> str:
     if wl < dsl:
         return "Low Storage"
     if wl > npl:
-        return "Spilling"
+        return "Spilling"       # level above crest level
     if abs(wl - npl) < 1e-9:
-        return "Spill Anytime"
+        return "Spill Anytime"  # exactly at crest, can spill at any time
     if abs(wl - npl) <= 2:
-        return "Spill Watch"
+        return "Spill Watch"    # within 2 ft below crest, close watch
     if wl - dsl <= 5:
         return "Low Storage"
     diff = npl - wl
@@ -270,14 +270,17 @@ def make_map(deck_df: pd.DataFrame):
             "Date_str": str(r["Date"]),
             "Latitude": float(r["lat"]),
             "Longitude": float(r["lon"]),
-            # larger radius for alert dams
-            "radius": 16000 if is_alert else 8000,
+            "radius": 8000,
             "color": STATUS_COLORS.get(status, [120, 120, 120]),
+            "icon": "alert",
         }
 
     records = [_row_to_record(r) for _, r in df_map.iterrows()]
     if not records:
         return None
+
+    alert_records = [rec for rec in records if rec["Status"] in ALERT_STATUSES]
+    normal_records = [rec for rec in records if rec["Status"] not in ALERT_STATUSES]
 
     view_state = pdk.ViewState(
         latitude=sum(rec["Latitude"] for rec in records) / len(records),
@@ -285,14 +288,55 @@ def make_map(deck_df: pd.DataFrame):
         zoom=6,
     )
 
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=records,
-        get_position="[Longitude, Latitude]",
-        get_fill_color="color",
-        get_radius="radius",
-        pickable=True,
-    )
+    layers = []
+
+    # Base circles for non-alert dams
+    if normal_records:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=normal_records,
+                get_position="[Longitude, Latitude]",
+                get_fill_color="color",
+                get_radius="radius",
+                pickable=True,
+            )
+        )
+
+    # Yellow triangle icons for alert dams
+    if alert_records:
+        icon_url = (
+            "https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/"
+            "icon-atlas.png"
+        )
+        icon_mapping = {
+            # Use the triangular marker from the atlas
+            "alert": {
+                "x": 128,
+                "y": 0,
+                "width": 128,
+                "height": 128,
+                "anchorY": 128,
+                "mask": True,
+            }
+        }
+        for rec in alert_records:
+            rec["color"] = [255, 255, 0]  # bright yellow
+
+        layers.append(
+            pdk.Layer(
+                "IconLayer",
+                data=alert_records,
+                get_icon="icon",
+                get_size=48,
+                size_scale=4,
+                get_position="[Longitude, Latitude]",
+                get_color="color",
+                pickable=True,
+                icon_atlas=icon_url,
+                icon_mapping=icon_mapping,
+            )
+        )
 
     tooltip = {
         "html": "<b>{LocationLabel}</b><br/>Status: {Status}"
@@ -301,7 +345,7 @@ def make_map(deck_df: pd.DataFrame):
         "style": {"backgroundColor": "white", "color": "black"},
     }
 
-    return pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip)
+    return pdk.Deck(layers=layers, initial_view_state=view_state, tooltip=tooltip)
 
 
 # ────────────────────── SIDEBAR ──────────────────────
@@ -328,10 +372,7 @@ with f1:
         default_day = date.today()
     else:
         _dates = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-        if _dates.dropna().empty:
-            default_day = date.today()
-        else:
-            default_day = _dates.dropna().max().date()
+        default_day = _dates.dropna().max().date() if not _dates.dropna().empty else date.today()
     show_date = st.date_input("Show date", value=default_day)
 
 with f2:
@@ -446,6 +487,13 @@ else:
     with tab_spill:
         st.info("No data to show.")
 
+# Short explanation of alert statuses
+st.caption(
+    "⚠ **Spill Watch**: water level within about 2 ft below NPL (crest level); "
+    "**Spill Anytime**: water level is at NPL and can start spilling at any moment; "
+    "**Spilling**: water level is above NPL and water is overtopping the crest."
+)
+
 # ───────── Data Table (Status color-coded) + Trend ─────────
 st.markdown("### 📋 Data")
 cols_show = [
@@ -474,7 +522,6 @@ for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
 
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
-    # white text on dark reds
     text_color = "white" if val in ALERT_STATUSES else "black"
     return f"background-color: {bg}; color: {text_color}; font-weight: 600;"
 
@@ -499,8 +546,8 @@ try:
 except Exception:
     st.dataframe(df_display, use_container_width=True)
 
-# ───── 7-Day Trend Chart for Selected Dam ─────
-st.markdown("### 📈 Water Level Trend (Past 7 Days)")
+# ───── Trend Chart with Custom Date Range ─────
+st.markdown("### 📈 Water Level Trend (Custom Range)")
 if not df.empty:
     eligible = (
         sorted(view["Location"].unique())
@@ -508,31 +555,52 @@ if not df.empty:
         else sorted(df["Location"].unique())
     )
     dam_for_trend = st.selectbox("Select a dam for trend", eligible)
-    end_date = (
-        df[df["Location"] == dam_for_trend]["Date"].max()
-        if only_latest
-        else show_date
-    )
-    start_date = end_date - timedelta(days=6)
-    win = df[
-        (df["Location"] == dam_for_trend)
-        & (df["Date"] >= start_date)
-        & (df["Date"] <= end_date)
-    ].sort_values("Date")
 
-    if win.empty:
-        st.info("No readings available for the selected dam in the last 7 days.")
+    dam_df = df[df["Location"] == dam_for_trend].dropna(subset=["Date"])
+    if dam_df.empty:
+        st.info("No readings available for the selected dam.")
     else:
-        trend_now = _trend_label_from_slice(win["Water_Level_ft"], win["Date"])
-        fig = px.line(
-            win,
-            x="Date",
-            y="Water_Level_ft",
-            markers=True,
-            title=f"{dam_for_trend} • last {(end_date - start_date).days + 1} days (available)",
+        dam_min_date = dam_df["Date"].min()
+        dam_max_date = dam_df["Date"].max()
+        default_start = max(dam_min_date, dam_max_date - timedelta(days=6))
+
+        date_range = st.date_input(
+            "Select date range",
+            value=(default_start, dam_max_date),
+            min_value=dam_min_date,
+            max_value=dam_max_date,
         )
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"Trend: {ARROWS.get(trend_now, trend_now)}")
+
+        # date_input for ranges returns a tuple (start, end)
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            # fallback if single date is returned
+            start_date = dam_min_date
+            end_date = dam_max_date
+
+        if start_date > end_date:
+            st.error("Start date must be on or before end date.")
+        else:
+            win = dam_df[
+                (dam_df["Date"] >= start_date) & (dam_df["Date"] <= end_date)
+            ].sort_values("Date")
+
+            if win.empty:
+                st.info("No readings available in the selected date range.")
+            else:
+                trend_now = _trend_label_from_slice(
+                    win["Water_Level_ft"], win["Date"]
+                )
+                fig = px.line(
+                    win,
+                    x="Date",
+                    y="Water_Level_ft",
+                    markers=True,
+                    title=f"{dam_for_trend} • {start_date} to {end_date}",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Trend over selected range: {ARROWS.get(trend_now, trend_now)}")
 
 # Map
 st.markdown("### 🗺️ Dams on Map (colored by Status)")
@@ -546,7 +614,7 @@ if deck is not None:
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
             "🟩 High Storage &nbsp;&nbsp;&nbsp; "
-            "⚠️ Spill Watch / Anytime / Spilling"
+            "⚠️ Yellow Triangle: Spill Watch / Anytime / Spilling"
         )
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
