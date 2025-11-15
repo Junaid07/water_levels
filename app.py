@@ -10,7 +10,7 @@ import streamlit as st
 
 # ───────────────────────── CONFIG ─────────────────────────
 st.set_page_config(page_title="Dam Water Levels Dashboard", layout="wide")
-st.title("💧 Dam Water Levels & Status Dashboard")
+st.title("💧 Water Levels & Status Dashboard of Small Dams")
 
 CSV_PATH = Path("dams_data_new.csv")
 
