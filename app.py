@@ -303,14 +303,13 @@ def make_map(deck_df: pd.DataFrame):
             )
         )
 
-    # Yellow triangle icons for alert dams
+    # Yellow alert icon (smaller, pin/triangle style)
     if alert_records:
         icon_url = (
             "https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/"
             "icon-atlas.png"
         )
         icon_mapping = {
-            # Use the triangular marker from the atlas
             "alert": {
                 "x": 128,
                 "y": 0,
@@ -328,8 +327,8 @@ def make_map(deck_df: pd.DataFrame):
                 "IconLayer",
                 data=alert_records,
                 get_icon="icon",
-                get_size=24,
-                size_scale=2,
+                get_size=24,      # smaller base size
+                size_scale=2,     # overall scaling → ~48 px instead of huge blob
                 get_position="[Longitude, Latitude]",
                 get_color="color",
                 pickable=True,
@@ -346,6 +345,7 @@ def make_map(deck_df: pd.DataFrame):
     }
 
     return pdk.Deck(layers=layers, initial_view_state=view_state, tooltip=tooltip)
+
 
 
 # ────────────────────── SIDEBAR ──────────────────────
