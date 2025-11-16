@@ -51,29 +51,30 @@ REQUIRED_COLS = [
 
 # Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Below Dead Level": [178, 34, 34],   # dark red – very alarming
-    "Low Storage": [255, 99, 71],        # tomato red
-    "Medium Storage": [255, 140, 0],     # orange
-    "High Storage": [0, 200, 0],         # green
-    "Spill Watch": [255, 215, 0],
-    "Spill Anytime": [255, 69, 0],
-    "Spilling": [139, 0, 0],
-    "Unknown": [120, 120, 120],          # grey
+    "Below Dead Level": [139, 0, 0],      # DARK RED
+    "Low Storage": [255, 69, 0],          # RED-ORANGE
+    "Medium Storage": [255, 165, 0],      # ORANGE
+    "High Storage": [0, 204, 68],         # GREEN
+    "Spill Watch": [255, 215, 0],         # GOLDEN YELLOW
+    "Spill Anytime": [255, 140, 0],       # ORANGE-RED
+    "Spilling": [255, 0, 0],              # BRIGHT RED
+    "Unknown": [120, 120, 120],           # GREY
 }
+
 ALERT_STATUSES = {"Spill Watch", "Spill Anytime", "Spilling"}
 
 # For table coloring (hex)
 STATUS_BG = {
-    "Below Dead Level": "#8b0000",       # very dark red
-    "Low Storage": "#ffdddd",            # light red
-    "Medium Storage": "#fff7cc",         # light yellow
-    "High Storage": "#ddffdd",           # light green
-    # darker, more alarming reds for spill-related statuses
-    "Spill Watch": "#ff9999",
-    "Spill Anytime": "#ff6666",
-    "Spilling": "#cc0000",
-    "Unknown": "#eeeeee",
+    "Below Dead Level": "#8B0000",     # Dark Red
+    "Low Storage": "#FF6347",          # Tomato (Red)
+    "Medium Storage": "#FFD580",       # Light Orange
+    "High Storage": "#CCFFCC",         # Light Green
+    "Spill Watch": "#FFB347",          # Orange-Alert
+    "Spill Anytime": "#FF7043",        # Reddish Orange
+    "Spilling": "#FF0000",             # Bright Red
+    "Unknown": "#EEEEEE"
 }
+
 
 # ──────────────────────── HELPERS ────────────────────────
 def _clean_header(s: str) -> str:
