@@ -51,30 +51,30 @@ REQUIRED_COLS = [
 
 # Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Below Dead Level": [139, 0, 0],      # DARK RED
-    "Low Storage": [255, 69, 0],          # RED-ORANGE
-    "Medium Storage": [255, 165, 0],      # ORANGE
-    "High Storage": [0, 204, 68],         # GREEN
-    "Spill Watch": [255, 215, 0],         # GOLDEN YELLOW
-    "Spill Anytime": [255, 140, 0],       # ORANGE-RED
-    "Spilling": [255, 0, 0],              # BRIGHT RED
-    "Unknown": [120, 120, 120],           # GREY
+    "Below Dead Level": [255, 255, 0],    # Yellow
+    "Low Storage": [220, 20, 60],         # Red
+    "Medium Storage": [255, 140, 0],      # Orange
+    "High Storage": [0, 200, 0],          # Green
+    # individual spill colors (we still override them to blue in the layer)
+    "Spill Watch": [65, 105, 225],        # Royal Blue
+    "Spill Anytime": [30, 144, 255],      # Dodger Blue
+    "Spilling": [0, 0, 255],              # Blue
+    "Unknown": [120, 120, 120],           # Grey
 }
 
 ALERT_STATUSES = {"Spill Watch", "Spill Anytime", "Spilling"}
 
-# For table coloring (hex)
+# For table coloring (hex) – soft, readable backgrounds
 STATUS_BG = {
-    "Below Dead Level": "#8B0000",     # Dark Red
-    "Low Storage": "#FF6347",          # Tomato (Red)
-    "Medium Storage": "#FFD580",       # Light Orange
-    "High Storage": "#CCFFCC",         # Light Green
-    "Spill Watch": "#FFB347",          # Orange-Alert
-    "Spill Anytime": "#FF7043",        # Reddish Orange
-    "Spilling": "#FF0000",             # Bright Red
-    "Unknown": "#EEEEEE"
+    "Below Dead Level": "#FFF9C4",   # soft yellow
+    "Low Storage": "#FFCDD2",        # soft red
+    "Medium Storage": "#FFE0B2",     # soft orange
+    "High Storage": "#C8E6C9",       # soft green
+    "Spill Watch": "#BBDEFB",        # light blue
+    "Spill Anytime": "#90CAF9",      # medium light blue
+    "Spilling": "#64B5F6",           # stronger blue
+    "Unknown": "#F5F5F5",            # light grey
 }
-
 
 # ──────────────────────── HELPERS ────────────────────────
 def _clean_header(s: str) -> str:
@@ -323,9 +323,9 @@ def make_map(deck_df: pd.DataFrame):
             str(r["Location"]) if r["Location"] is not None else ""
         )
 
-        # color: alerts forced to yellow, others use storage color
+        # color: alerts forced to BLUE balloon, others use storage color
         if is_alert:
-            color = [255, 255, 0]  # bright yellow balloon
+            color = [30, 144, 255]  # blue balloon for Spill Watch / Anytime / Spilling
         else:
             color = STATUS_COLORS.get(status, [120, 120, 120])
 
@@ -400,7 +400,8 @@ with st.sidebar:
     st.header("➕ Add / Update Daily Reading")
     df_all = load_data()
     sel_loc = st.selectbox(
-        "Dam (Location)", sorted(df_all["Location"].dropna().unique())
+        "Dam",  # label for users
+        sorted(df_all["Location"].dropna().unique())
     )
     sel_date = st.date_input("Date", value=date.today())
     wl = st.number_input("Water Level (ft)", step=0.1, format="%.2f")
@@ -534,7 +535,7 @@ if not view.empty:
                     f"<small style='color:#8b0000;'>{below_dead_names}</small>",
                     unsafe_allow_html=True,
                 )
-                st.metric("Count Below DSL", int(below_dead_df["Location"].nunique()))
+                st.metric("Number of Dams Below DSL", int(below_dead_df["Location"].nunique()))
             else:
                 st.markdown("<small>None</small>", unsafe_allow_html=True)
 
@@ -586,13 +587,12 @@ cols_show = [
 df_display = (
     view[cols_show]
     .rename(columns={
-        "Location": "Dam",      # 👈 new label
+        "Location": "Dam",
         "TrendDisp": "Trend"
     })
     .sort_values(["Dam"])
     .reset_index(drop=True)
 )
-
 
 # Format key numeric columns to 2 decimals as strings (for display only)
 for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
@@ -603,10 +603,9 @@ for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
 
 
 def _style_status(val):
-    bg = STATUS_BG.get(val, "#eeeeee")
-    # white text for critical or spill-related statuses
-    text_color = "white" if (val in ALERT_STATUSES or val == "Below Dead Level") else "black"
-    return f"background-color: {bg}; color: {text_color}; font-weight: 600;"
+    bg = STATUS_BG.get(val, "#F5F5F5")
+    # always dark text on light backgrounds for readability
+    return f"background-color: {bg}; color: #000000; font-weight: 600;"
 
 
 def _style_trend(val):
@@ -720,11 +719,11 @@ if deck is not None:
         # Legend under the map
         st.markdown(
             "****  \n"
-            "🟥 Below Dead Level &nbsp;&nbsp;&nbsp; "
+            "🟡 Below Dead Level &nbsp;&nbsp;&nbsp; "
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
             "🟩 High Storage &nbsp;&nbsp;&nbsp; "
-            "⚠️ Yellow Balloon: Spill Watch / Anytime / Spilling"
+            "🔵 Blue Balloon: Spill Watch / Anytime / Spilling"
         )
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
