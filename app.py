@@ -51,21 +51,23 @@ REQUIRED_COLS = [
 
 # Colors for MAP (RGB)
 STATUS_COLORS = {
-    "Low Storage": [255, 0, 0],       # red
-    "Medium Storage": [255, 140, 0],  # orange
-    "High Storage": [0, 200, 0],      # green
+    "Below Dead Level": [178, 34, 34],   # dark red – very alarming
+    "Low Storage": [255, 99, 71],        # tomato red
+    "Medium Storage": [255, 140, 0],     # orange
+    "High Storage": [0, 200, 0],         # green
     "Spill Watch": [255, 215, 0],
     "Spill Anytime": [255, 69, 0],
     "Spilling": [139, 0, 0],
-    "Unknown": [120, 120, 120],       # grey
+    "Unknown": [120, 120, 120],          # grey
 }
 ALERT_STATUSES = {"Spill Watch", "Spill Anytime", "Spilling"}
 
 # For table coloring (hex)
 STATUS_BG = {
-    "Low Storage": "#ffdddd",         # light red
-    "Medium Storage": "#fff7cc",      # light yellow
-    "High Storage": "#ddffdd",        # light green
+    "Below Dead Level": "#8b0000",       # very dark red
+    "Low Storage": "#ffdddd",            # light red
+    "Medium Storage": "#fff7cc",         # light yellow
+    "High Storage": "#ddffdd",           # light green
     # darker, more alarming reds for spill-related statuses
     "Spill Watch": "#ff9999",
     "Spill Anytime": "#ff6666",
@@ -88,7 +90,7 @@ def ensure_csv():
 @st.cache_data(ttl=30)
 def load_data() -> pd.DataFrame:
     """
-    Load dams_data.csv, normalize headers, fix Location spacing,
+    Load dams_data_new.csv, normalize headers, fix Location spacing,
     parse dates (D/M/Y), make numeric, and forward/back-fill static columns
     (Height, DSL, NPL, Latitude, etc.) for each dam.
     """
@@ -151,14 +153,20 @@ def load_data() -> pd.DataFrame:
 def compute_status_row(wl: float, npl: float, dsl: float) -> str:
     if pd.isna(wl) or pd.isna(npl) or pd.isna(dsl):
         return "Unknown"
+
+    # Below DSL is most critical storage condition
     if wl < dsl:
-        return "Low Storage"
+        return "Below Dead Level"
+
+    # Spill-related conditions
     if wl > npl:
         return "Spilling"       # level above crest level
     if abs(wl - npl) < 1e-9:
         return "Spill Anytime"  # exactly at crest, can spill at any time
     if abs(wl - npl) <= 2:
         return "Spill Watch"    # within 2 ft below crest, close watch
+
+    # Storage bands between DSL and NPL
     if wl - dsl <= 5:
         return "Low Storage"
     diff = npl - wl
@@ -248,7 +256,6 @@ def _trend_label_from_slice(
         return "Falling then Rising"
 
     return "Variable"
-
 
 
 def compute_trend_for_loc_asof(
@@ -480,11 +487,16 @@ if not view.empty:
     )
 
     alert_df = view[view["Status"].isin(ALERT_STATUSES)]
+    below_dead_df = view[view["Status"] == "Below Dead Level"]
+    below_dead_names = ", ".join(sorted(below_dead_df["Location"].unique()))
 
     with tab_overview:
-        c1, c2, c3 = st.columns([1, 2, 2])
+        # 4 KPIs across the top: Dams shown, Max Storage, Lowest Storage, Below DSL
+        c1, c2, c3, c4 = st.columns([1, 2, 2, 2])
+
         with c1:
             st.metric("Dams shown", view["Location"].nunique())
+
         with c2:
             st.markdown(
                 "<span style='font-weight:600; color:#1f4e79;'>Dam(s) with Max Storage</span>",
@@ -497,6 +509,7 @@ if not view.empty:
                 )
             else:
                 st.markdown("—")
+
         with c3:
             st.markdown(
                 "<span style='font-weight:600; color:#7f0000;'>Dam(s) with Lowest Storage</span>",
@@ -509,6 +522,20 @@ if not view.empty:
                 )
             else:
                 st.markdown("—")
+
+        with c4:
+            st.markdown(
+                "<span style='font-weight:600; color:#8b0000;'>Dam(s) Below Dead Level</span>",
+                unsafe_allow_html=True,
+            )
+            if below_dead_names:
+                st.markdown(
+                    f"<small style='color:#8b0000;'>{below_dead_names}</small>",
+                    unsafe_allow_html=True,
+                )
+                st.metric("Count Below DSL", int(below_dead_df["Location"].nunique()))
+            else:
+                st.markdown("<small>None</small>", unsafe_allow_html=True)
 
     with tab_spill:
         c1, c2 = st.columns([1, 3])
@@ -554,12 +581,17 @@ cols_show = [
     "Status",
     "TrendDisp",
 ]
+
 df_display = (
     view[cols_show]
-    .rename(columns={"TrendDisp": "Trend"})
-    .sort_values(["Location"])
+    .rename(columns={
+        "Location": "Dam",      # 👈 new label
+        "TrendDisp": "Trend"
+    })
+    .sort_values(["Dam"])
     .reset_index(drop=True)
 )
+
 
 # Format key numeric columns to 2 decimals as strings (for display only)
 for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
@@ -571,7 +603,8 @@ for col in ["Water_Level_ft", "DSL (ft)", "NPL (ft)"]:
 
 def _style_status(val):
     bg = STATUS_BG.get(val, "#eeeeee")
-    text_color = "white" if val in ALERT_STATUSES else "black"
+    # white text for critical or spill-related statuses
+    text_color = "white" if (val in ALERT_STATUSES or val == "Below Dead Level") else "black"
     return f"background-color: {bg}; color: {text_color}; font-weight: 600;"
 
 
@@ -641,6 +674,13 @@ if not df.empty:
                 trend_now = _trend_label_from_slice(
                     win["Water_Level_ft"], win["Date"]
                 )
+
+                # Get representative NPL & DSL for this dam (assumed static per location)
+                npl_series = dam_df["NPL (ft)"].dropna()
+                dsl_series = dam_df["DSL (ft)"].dropna()
+                npl_val = npl_series.iloc[-1] if not npl_series.empty else None
+                dsl_val = dsl_series.iloc[-1] if not dsl_series.empty else None
+
                 fig = px.line(
                     win,
                     x="Date",
@@ -648,6 +688,25 @@ if not df.empty:
                     markers=True,
                     title=f"{dam_for_trend} • {start_date} to {end_date}",
                 )
+
+                # Add horizontal lines for NPL and DSL
+                if npl_val is not None:
+                    fig.add_hline(
+                        y=npl_val,
+                        line_dash="dash",
+                        line_color="green",
+                        annotation_text="NPL",
+                        annotation_position="top left",
+                    )
+                if dsl_val is not None:
+                    fig.add_hline(
+                        y=dsl_val,
+                        line_dash="dot",
+                        line_color="red",
+                        annotation_text="DSL",
+                        annotation_position="bottom left",
+                    )
+
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption(f"Trend over selected range: {ARROWS.get(trend_now, trend_now)}")
 
@@ -660,6 +719,7 @@ if deck is not None:
         # Legend under the map
         st.markdown(
             "****  \n"
+            "🟥 Below Dead Level &nbsp;&nbsp;&nbsp; "
             "🟥 Low Storage &nbsp;&nbsp;&nbsp; "
             "🟧 Medium Storage &nbsp;&nbsp;&nbsp; "
             "🟩 High Storage &nbsp;&nbsp;&nbsp; "
